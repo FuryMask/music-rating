@@ -1,0 +1,470 @@
+"""Окно «Создание альбома»: выбор способа или ссылка на Deezer/Spotify/YouTube Music.
+
+Открывается по «+» в сайдбаре вместо мастера. Устроено как диалог
+трека (см. dialogs/track_dialog.py):
+  • фон оверлея — РАЗМЫТЫЙ снимок главного окна (grab + blur);
+  • карточка (#dialogCard) поднимается из низа с проявлением;
+  • внутри карточки QStackedWidget из двух страниц:
+      0 — «Создать вручную» / «Создать автоматически» (кнопки
+          фиксированной ширины, по центру) / «Отмена»;
+      1 — ввод ссылки на альбом Deezer, Spotify или YouTube Music
+          + «Загрузить». Провайдер определяется по адресу
+          (deezer.com / spotify / youtube);
+  • ключи Spotify ВСТРОЕНЫ В КОД (app/build_config.py — тестовая
+    сборка): полей ввода ключей/прокси НЕТ. Если ключи не вшиты
+    (пустые в конфиге), ссылка Spotify даёт красный тост-ошибку;
+    встроенный прокси применяется к запросам Spotify автоматически;
+  • если ссылка не на альбом (или сети нет) — красный тост;
+  • если альбом по этой ссылке УЖЕ создавали (ссылка запоминается
+    за альбомом по id источника: у Deezer — число, у Spotify —
+    «spotify:<id>») — жёлтое сообщение «Кажется, этот альбом уже
+    создан»: окно не закрывается, загрузить альбом второй раз
+    нельзя;
+  • при удачной загрузке — сигнал album_loaded(данные альбома): главное
+    окно прячет это окно, открывает мастер с заполненными данными
+    и предупреждением (см. dialogs/autofill_warning_dialog.py).
+
+Esc: со страницы ссылки — назад (к выбору), с выбора — закрыть окно.
+Во время загрузки поле и кнопки заблокированы, Esc игнорируется.
+
+Ошибки («ссылка не распознана», «альбом уже создан», проблемы
+ключей/прокси) — всплывающие тосты сверху по центру главного окна
+(Task 31, см. widgets/toast.py); надпись хода загрузки («Загрузка
+альбома с Deezer…») остаётся под полем — это индикатор процесса,
+а не уведомление.
+
+Кнопки нижнего ряда («Отмена», «← Назад», «Загрузить») смещены
+влево и вверх от краёв карточки: при ховер-росте (+10 %) они
+не должны «пропадать» на её невидимых границах.
+"""
+
+from PySide6.QtCore import (
+    QEasingCurve,
+    QParallelAnimationGroup,
+    QPropertyAnimation,
+    QPoint,
+    Qt,
+    QUrl,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QShortcut,
+)
+from PySide6.QtWidgets import (
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app.services import deezer, spotify, ytmusic
+from app.services.deezer import DeezerAlbum, DeezerError
+from app.services.spotify import SpotifyAlbum, SpotifyError
+from app.services.ytmusic import YTMusicAlbum, YTMusicError
+from app.store import STORE
+from app.ui.widgets.hoverable import HoverButton
+from app.ui.widgets.toast import KIND_ERROR, notify
+from app.ui.dialogs.exit_confirm_dialog import _make_blurred
+
+CARD_SIZE = (460, 380)   # карточка выбора/ссылки/ключей (третья строка — прокси)
+CHOICE_BUTTON_WIDTH = 280  # кнопки выбора — фиксированной ширины по центру
+RISE_MS = 320            # подъём с низа + проявление
+BLUR_RADIUS = 26         # сила блюра фона (как в диалоге трека)
+
+NOT_LINK_MSG = (
+    "Это не ссылка на альбом Deezer, Spotify или YouTube Music. "
+    "Примеры: https://www.deezer.com/album/123456, "
+    "https://open.spotify.com/album/4LH4d3cOWNNsVw41Gqt2kv, "
+    "https://music.youtube.com/playlist?list=OLAK5uy_…"
+)
+
+
+def detect_provider(link: str) -> str:
+    """Провайдер ссылки: 'deezer' | 'spotify' | 'ytmusic' | '' (без сети)."""
+    text = link.strip()
+    if not text:
+        return ""
+    if text.casefold().startswith("spotify:album:"):
+        return "spotify"
+    if "://" not in text:
+        text = "https://" + text
+    host = QUrl(text).host().casefold()
+    if "spotify" in host:
+        return "spotify"
+    if "deezer" in host:
+        return "deezer"
+    if "youtube" in host or host == "youtu.be":
+        return "ytmusic"
+    return ""
+
+
+
+class CreateChoiceOverlay(QWidget):
+    """Оверлей «как создать альбом»: вручную или по ссылке."""
+
+    manual_requested = Signal()       # «Создать вручную»
+    album_loaded = Signal(object)     # данные альбома — загрузка удалась
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("choiceOverlay")
+        self._bg: QPixmap | None = None
+        self._loading = False
+        self._dup_link: str | None = None  # ссылка уже созданного альбома
+
+        self.card = QWidget(self)
+        self.card.setObjectName("dialogCard")
+        self.card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.card.setFixedSize(*CARD_SIZE)
+
+        self._fx = QGraphicsOpacityEffect(self.card)
+        self._fx.setOpacity(1.0)
+        self.card.setGraphicsEffect(self._fx)
+
+        card_v = QVBoxLayout(self.card)
+        card_v.setContentsMargins(24, 22, 24, 22)
+        card_v.setSpacing(12)
+
+        self.pages = QStackedWidget(self.card)
+        card_v.addWidget(self.pages)
+        self.pages.addWidget(self._make_choice_page())
+        self.pages.addWidget(self._make_link_page())
+        # ТЕСТОВАЯ СБОРКА: страницы ключей Spotify больше нет —
+        # ключи и прокси встроены в код (app/build_config.py)
+
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self).activated.connect(
+            self.handle_escape
+        )
+
+    # ==================================================================
+    # Страница 0: выбор способа
+    # ==================================================================
+    def _make_choice_page(self) -> QWidget:
+        page = QWidget(self.card)
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(14)
+
+        title = QLabel("Создание альбома", page)
+        title.setObjectName("dialogTitle")
+        v.addWidget(title)
+
+        subtitle = QLabel("Как создадим новый альбом?", page)
+        subtitle.setObjectName("emptyHint")
+        v.addWidget(subtitle)
+
+        v.addSpacing(6)
+
+        # Кнопки НЕ на всю ширину карточки, а фиксированной ширины
+        # по центру: растянутые на всю карточку, при ховере (+10 %)
+        # они вырастали за её скруглённые края
+        self.btn_manual = HoverButton("Создать вручную", page)
+        self.btn_manual.setObjectName("choiceButton")
+        self.btn_manual.setFixedWidth(CHOICE_BUTTON_WIDTH)
+        self.btn_manual.clicked.connect(self._choose_manual)
+        v.addWidget(self.btn_manual, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.btn_auto = HoverButton("Создать автоматически", page)
+        self.btn_auto.setObjectName("choiceButton")
+        self.btn_auto.setFixedWidth(CHOICE_BUTTON_WIDTH)
+        self.btn_auto.clicked.connect(self._choose_auto)
+        v.addWidget(self.btn_auto, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        v.addStretch(1)
+
+        cancel_row = QHBoxLayout()
+        # Сдвиг «Отмена» чуть левее и выше: при ховер-росте (+10 %)
+        # кнопка не должна добираться до невидимых границ карточки
+        # (справа/снизу она слегка «пропадает»)
+        cancel_row.setContentsMargins(0, 0, 12, 10)
+        cancel_row.addStretch(1)
+        self.btn_cancel = HoverButton("Отмена", page)
+        self.btn_cancel.setObjectName("ghostButton")
+        self.btn_cancel.clicked.connect(self.close_overlay)
+        cancel_row.addWidget(self.btn_cancel)
+        v.addLayout(cancel_row)
+        return page
+
+    # ==================================================================
+    # Страница 1: ссылка на альбом Deezer
+    # ==================================================================
+    def _make_link_page(self) -> QWidget:
+        page = QWidget(self.card)
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
+
+        title = QLabel("Автоматическое создание", page)
+        title.setObjectName("dialogTitle")
+        v.addWidget(title)
+
+        caption = QLabel(
+            "Вставьте ссылку на альбом Deezer, Spotify или YouTube Music:",
+            page,
+        )
+        caption.setObjectName("fieldLabel")
+        caption.setWordWrap(True)
+        v.addWidget(caption)
+
+        self.input_link = QLineEdit(page)
+        self.input_link.setPlaceholderText(
+            "https://www.deezer.com/album/123456"
+        )
+        self.input_link.textChanged.connect(self._on_link_changed)
+        self.input_link.returnPressed.connect(self._try_load)
+        v.addWidget(self.input_link)
+
+        # Ход загрузки (приглушённая надпись — индикатор процесса,
+        # а не уведомление: ошибки уходят в тосты, Task 31)
+        self.lbl_status = QLabel("", page)
+        self.lbl_status.setObjectName("emptyHint")
+        self.lbl_status.hide()
+        v.addWidget(self.lbl_status)
+
+        v.addStretch(1)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        # Кнопки не должны упираться в невидимые границы страницы:
+        # страница (QStackedWidget) обрезает детей по своим границам,
+        # и при ховер-росте (+10 %) у «Назад» срезался ЛЕВЫЙ край
+        # (она стоит вплотную к границе, х = 0), а «Загрузить» без
+        # правого поля резался бы справа. Отступы 10/12 дают запас;
+        # нижнее поле 10 приподнимает ряд от нижней границы
+        buttons.setContentsMargins(10, 0, 12, 10)
+        self.btn_back = HoverButton("← Назад", page)
+        self.btn_back.setObjectName("ghostButton")
+        self.btn_back.clicked.connect(self._back_to_choice)
+        buttons.addWidget(self.btn_back)
+        buttons.addStretch(1)
+        self.btn_load = HoverButton("Загрузить", page)
+        self.btn_load.setObjectName("primaryButton")
+        self.btn_load.setEnabled(False)
+        self.btn_load.clicked.connect(self._try_load)
+        buttons.addWidget(self.btn_load)
+        v.addLayout(buttons)
+        return page
+
+    # ==================================================================
+    # Поведение
+    # ==================================================================
+    def _choose_manual(self) -> None:
+        self.close_overlay()
+        self.manual_requested.emit()
+
+    def _choose_auto(self) -> None:
+        self._show_error("")
+        self._show_dup("")
+        self.pages.setCurrentIndex(1)
+        self.input_link.setFocus()
+
+    def _back_to_choice(self) -> None:
+        if self._loading:
+            return
+        self._show_error("")
+        self._show_dup("")
+        self.input_link.clear()
+        self.pages.setCurrentIndex(0)
+
+    def _on_link_changed(self, *_args) -> None:
+        """Текст ссылки меняется: блокировка «уже создан» снимается."""
+        if self._dup_link is not None and \
+                self.input_link.text().strip() != self._dup_link:
+            self._dup_link = None
+            self._show_dup("")
+        self._sync_load_state()
+
+    def _sync_load_state(self, *_args) -> None:
+        text = self.input_link.text().strip()
+        blocked = self._dup_link is not None and text == self._dup_link
+        self.btn_load.setEnabled(
+            bool(text) and not self._loading and not blocked
+        )
+
+    def _show_error(self, text: str) -> None:
+        """Ошибка загрузки по ссылке — красный тост (Task 31).
+
+        Пустая строка — сброс перед новой попыткой: показывать нечего.
+        """
+        if text:
+            notify(self, text, KIND_ERROR)
+
+    def _show_dup(self, text: str) -> None:
+        """Сообщение «этот альбом уже создан» — красный тост (Task 31)."""
+        if text:
+            notify(self, text, KIND_ERROR)
+
+    # --- Ключи Spotify встроены в код (тестовая сборка) ----------------
+    def _try_load(self) -> None:
+        if self._loading:
+            return
+        link = self.input_link.text().strip()
+        if not link:
+            return
+        # Ссылка уже созданного альбома: запрещаем и повторную загрузку
+        # (Enter в поле обходит заблокированную кнопку)
+        if link == self._dup_link:
+            self._show_dup("Кажется, этот альбом уже создан.")
+            return
+        provider = detect_provider(link)
+        if provider == "spotify":
+            # Встроенный прокси (app/build_config.py): применяется до
+            # первого запроса, менеджер у сервиса один
+            spotify.apply_proxy(spotify.load_proxy())
+            if not spotify.has_embedded_keys() and \
+                    spotify.load_credentials() is None:
+                # Ключей в сборку не вшили — полей ввода в тестовой
+                # сборке нет, остаётся честная ошибка
+                self._show_error(
+                    "Ключи Spotify не встроены в эту сборку — "
+                    "попросите разработчика вписать их в app/build_config.py."
+                )
+                return
+        self._loading = True
+        self._show_error("")
+        status_texts = {
+            "spotify": "Загрузка альбома со Spotify…",
+            "ytmusic": "Загрузка альбома с YouTube Music…",
+        }
+        self.lbl_status.setText(
+            status_texts.get(provider, "Загрузка альбома с Deezer…")
+        )
+        self.lbl_status.show()
+        self.btn_load.setEnabled(False)
+        self.btn_back.setEnabled(False)
+        self.input_link.setEnabled(False)
+
+        data: DeezerAlbum | SpotifyAlbum | YTMusicAlbum | None = None
+        error_text = ""
+        try:
+            if provider == "spotify":
+                data = spotify.load_album_from_link(link)
+            elif provider == "deezer":
+                data = deezer.load_album_from_link(link)
+            elif provider == "ytmusic":
+                data = ytmusic.load_album_from_link(link)
+            else:
+                error_text = NOT_LINK_MSG
+        except (DeezerError, SpotifyError, YTMusicError) as exc:
+            error_text = str(exc)
+
+        # Загрузка могла случиться, пока окно уже закрыли (Esc/кнопки
+        # заблокированы, но перестраховка не помешает)
+        self._loading = False
+        self.btn_back.setEnabled(True)
+        self.input_link.setEnabled(True)
+        self.lbl_status.hide()
+        self._sync_load_state()
+
+        if not self.isVisible():
+            return
+        if data is None:
+            # ТЕСТОВАЯ СБОРКА: никакого окна ключей — любая ошибка
+            # (отвергнутые ключи, блокировка провайдера) — просто тост
+            self._show_error(error_text or "Не удалось загрузить альбом.")
+            return
+        # Защита от дублей: альбом, созданный по этой ссылке, уже есть
+        # (ссылка запоминается за альбомом по id источника)
+        if STORE.find_album_by_source(data.album_id) is not None:
+            self._dup_link = link
+            self._show_dup("Кажется, этот альбом уже создан.")
+            self._sync_load_state()
+            return
+        self.input_link.clear()
+        self.close_overlay()
+        self.album_loaded.emit(data)
+
+    # ==================================================================
+    # Открытие / закрытие (блюр-фон + подъём карточки, как в треке)
+    # ==================================================================
+    def open(self) -> None:
+        parent = self.parentWidget()
+        # Снимок ДО показа оверлея — иначе в кадр попал бы он сам
+        self._bg = _make_blurred(parent.grab())
+        self.setGeometry(parent.rect())
+
+        self._loading = False
+        self._dup_link = None
+        self._show_error("")
+        self._show_dup("")
+        self.lbl_status.hide()
+        self.input_link.setEnabled(True)
+        self.btn_back.setEnabled(True)
+        self.input_link.clear()
+        self.pages.setCurrentIndex(0)
+        self._sync_load_state()
+
+        self.show()
+        self.raise_()
+
+        target = QPoint(
+            (self.width() - CARD_SIZE[0]) // 2,
+            (self.height() - CARD_SIZE[1]) // 2,
+        )
+        self._fx.setOpacity(0.0)
+        self.card.move(target.x(), self.height() + 8)
+
+        pos_anim = QPropertyAnimation(self.card, b"pos", self.card)
+        pos_anim.setDuration(RISE_MS)
+        pos_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        pos_anim.setStartValue(self.card.pos())
+        pos_anim.setEndValue(target)
+        fade_anim = QPropertyAnimation(self._fx, b"opacity", self.card)
+        fade_anim.setDuration(RISE_MS)
+        fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        fade_anim.setStartValue(0.0)
+        fade_anim.setEndValue(1.0)
+        group = QParallelAnimationGroup(self.card)
+        group.addAnimation(pos_anim)
+        group.addAnimation(fade_anim)
+
+        self.card.show()
+        group.start(QParallelAnimationGroup.DeletionPolicy.DeleteWhenStopped)
+        self.btn_manual.setFocus()
+
+    def close_overlay(self) -> None:
+        self.card.hide()
+        self.hide()
+
+    def handle_escape(self) -> None:
+        if not self.isVisible():
+            return  # Esc не должен управлять спрятанным окном
+        if self._loading:
+            return  # идёт загрузка — Esc игнорируем
+        if self.pages.currentIndex() == 1:
+            self._back_to_choice()
+            return
+        self.close_overlay()
+
+    # ==================================================================
+    # Отрисовка и геометрия
+    # ==================================================================
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        if self._bg is not None:
+            painter.drawPixmap(self.rect(), self._bg)
+        else:
+            painter.fillRect(self.rect(), QColor("#141414"))
+        # лёгкое затемнение — карточка читается контрастнее
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 70))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.isVisible():
+            self.card.move(
+                (self.width() - CARD_SIZE[0]) // 2,
+                (self.height() - CARD_SIZE[1]) // 2,
+            )
+            self._fx.setOpacity(1.0)
+
+    def mousePressEvent(self, event) -> None:
+        # Клик по фону ничего не делает (закрытие — по кнопкам/Esc)
+        event.accept()

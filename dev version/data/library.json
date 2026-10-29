@@ -1,0 +1,293 @@
+{
+  "artists": [
+    {
+      "name": "madk1d",
+      "genre": "",
+      "photo_path": "data/covers/e2978e2c0f36483b91e82b2d4c0d21e9.jpg"
+    },
+    {
+      "name": "Паранойя",
+      "genre": "",
+      "photo_path": "data/covers/e25b31ada76b43cea2d7721d4b02699d.jpg"
+    },
+    {
+      "name": "тёмный принц",
+      "genre": "",
+      "photo_path": "data/covers/ea72bb82ba32459cb3fb9a7f9e740649.jpg"
+    },
+    {
+      "name": "GRILLYAZH",
+      "genre": "",
+      "photo_path": "data/covers/db626b08b1ea40bd83a24ff155a406d3.jpg"
+    },
+    {
+      "name": "The Weeknd",
+      "genre": "",
+      "photo_path": "data/covers/c29c19002c6945bb9f8c43d9c44df32a.jpg"
+    }
+  ],
+  "albums": [
+    {
+      "id": "540a46a3f1364fa49d5e1b9d6a112e54",
+      "title": "After Hours",
+      "year": "2020",
+      "genre": "R&B",
+      "region": "RU",
+      "cover_path": "data/covers/56aa173a9cd2490e94954cba1eb0eb39.jpg",
+      "artist_names": [
+        "The Weeknd"
+      ],
+      "tracks": [
+        {
+          "title": "Alone Again",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Too Late",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Hardest To Love",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Scared To Live",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Snowchild",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Escape From LA",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Heartless",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Faith",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Blinding Lights",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "In Your Eyes",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Save Your Tears",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Repeat After Me (Interlude)",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "After Hours",
+          "artists": [
+            "The Weeknd"
+          ]
+        },
+        {
+          "title": "Until I Bleed Out",
+          "artists": [
+            "The Weeknd"
+          ]
+        }
+      ],
+      "rating": null,
+      "rated_at": null,
+      "created_at": "2026-10-23T03:33:29",
+      "source_id": "137272602"
+    },
+    {
+      "id": "4bd37ab5d5e64a5293a85f7e5603cdd6",
+      "title": "After Hours",
+      "year": "2020",
+      "genre": "",
+      "region": "RU",
+      "cover_path": "data/covers/e6cba50000cb470bb7774e66791deefa.jpg",
+      "artist_names": [
+        "The Weeknd"
+      ],
+      "tracks": [
+        {
+          "title": "dsada",
+          "artists": [
+            "The Weeknd"
+          ]
+        }
+      ],
+      "rating": null,
+      "rated_at": null,
+      "created_at": "2026-10-23T03:33:55",
+      "source_id": ""
+    },
+    {
+      "id": "79ad5b3b308b45da8e0e9aa9147f1bab",
+      "title": "выф",
+      "year": "2342",
+      "genre": "",
+      "region": "RU",
+      "cover_path": null,
+      "artist_names": [
+        "The Weeknd"
+      ],
+      "tracks": [
+        {
+          "title": "dadas",
+          "artists": [
+            "The Weeknd"
+          ]
+        }
+      ],
+      "rating": null,
+      "rated_at": null,
+      "created_at": "2026-10-23T03:36:06",
+      "source_id": ""
+    },
+    {
+      "id": "bfc1b08d0ba94edeab726434f4d6fe40",
+      "title": "dasdsa",
+      "year": "3252",
+      "genre": "",
+      "region": "RU",
+      "cover_path": null,
+      "artist_names": [
+        "The Weeknd"
+      ],
+      "tracks": [
+        {
+          "title": "dsadsa",
+          "artists": [
+            "The Weeknd"
+          ]
+        }
+      ],
+      "rating": null,
+      "rated_at": null,
+      "created_at": "2026-10-23T03:36:18",
+      "source_id": ""
+    },
+    {
+      "id": "b2f446a2f3e640e79a112b708551f51a",
+      "title": "dsadas",
+      "year": "3243",
+      "genre": "",
+      "region": "RU",
+      "cover_path": null,
+      "artist_names": [
+        "The Weeknd"
+      ],
+      "tracks": [
+        {
+          "title": "d421421",
+          "artists": [
+            "The Weeknd"
+          ]
+        }
+      ],
+      "rating": null,
+      "rated_at": null,
+      "created_at": "2026-10-23T03:36:32",
+      "source_id": ""
+    },
+    {
+      "id": "4fda45fb85f2479581c6be085d1e6e89",
+      "title": "523532",
+      "year": "3424",
+      "genre": "",
+      "region": "RU",
+      "cover_path": null,
+      "artist_names": [
+        "The Weeknd"
+      ],
+      "tracks": [
+        {
+          "title": "6254g4e",
+          "artists": [
+            "The Weeknd"
+          ]
+        }
+      ],
+      "rating": null,
+      "rated_at": null,
+      "created_at": "2026-10-23T03:36:43",
+      "source_id": ""
+    },
+    {
+      "id": "09f1a26e29ae4ad697d5d76037d4fe26",
+      "title": "dwadwa",
+      "year": "5325",
+      "genre": "",
+      "region": "RU",
+      "cover_path": null,
+      "artist_names": [
+        "The Weeknd"
+      ],
+      "tracks": [
+        {
+          "title": "523532523",
+          "artists": [
+            "The Weeknd"
+          ]
+        }
+      ],
+      "rating": null,
+      "rated_at": null,
+      "created_at": "2026-10-23T03:36:55",
+      "source_id": ""
+    },
+    {
+      "id": "73e0b9ddc8f7458a831583e7da93bc6e",
+      "title": "523523",
+      "year": "5235",
+      "genre": "",
+      "region": "RU",
+      "cover_path": null,
+      "artist_names": [
+        "The Weeknd"
+      ],
+      "tracks": [
+        {
+          "title": "gfege",
+          "artists": [
+            "The Weeknd"
+          ]
+        }
+      ],
+      "rating": null,
+      "rated_at": null,
+      "created_at": "2026-10-23T03:37:04",
+      "source_id": ""
+    }
+  ]
+}
