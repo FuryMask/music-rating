@@ -533,15 +533,21 @@ def _best_image(images: list) -> str | None:
     )["url"])
 
 
-def fetch_album(album_id: str) -> "SpotifyAlbum":
+def fetch_album(album_id: str, *, catalog=None) -> "SpotifyAlbum":
     """Запросить альбом у Spotify и собрать SpotifyAlbum.
 
     Жанр: поле убрано из API — остаётся пустым. Фото исполнителей:
     одиночные запросы /v1/artists/{id} (батч в Development Mode
     отвечает 403), не больше MAX_ARTIST_PHOTO_LOOKUPS на альбом.
     """
-    token = _get_token()
-    data = _get_json(f"{API_BASE}/v1/albums/{album_id}", token)
+    if catalog is None:
+        token = _get_token()
+        data = _get_json(f"{API_BASE}/v1/albums/{album_id}", token)
+    else:
+        result = catalog.request("spotify-album", id=album_id)
+        data = result.get("album")
+        if not isinstance(data, dict):
+            raise SpotifyError("Облачный каталог вернул некорректный альбом Spotify.")
 
     title = str(data.get("name") or "").strip()
     if not title:
@@ -577,7 +583,7 @@ def fetch_album(album_id: str) -> "SpotifyAlbum":
         if isinstance(item, dict)
     )
     pages = 1
-    while next_url and pages < MAX_TRACK_PAGES:
+    while catalog is None and next_url and pages < MAX_TRACK_PAGES:
         page = _get_json(str(next_url), token)
         raw_tracks.extend(
             item for item in page.get("items") or []
@@ -608,7 +614,13 @@ def fetch_album(album_id: str) -> "SpotifyAlbum":
 
     # Фото: одиночные запросы, кап по количеству
     photo_ids = list(artist_ids)[:MAX_ARTIST_PHOTO_LOOKUPS]
-    if photo_ids:
+    if catalog is not None:
+        photo_data = result.get("photos") or {}
+        for artist_id in photo_ids:
+            image = _best_image(photo_data.get(artist_id) or [])
+            if image:
+                photos.setdefault(artist_ids[artist_id], image)
+    elif photo_ids:
         payloads = _get_many_json(
             [f"{API_BASE}/v1/artists/{artist_id}" for artist_id in photo_ids],
             token,
@@ -630,10 +642,10 @@ def fetch_album(album_id: str) -> "SpotifyAlbum":
     )
 
 
-def load_album_from_link(link_text: str) -> "SpotifyAlbum":
+def load_album_from_link(link_text: str, *, catalog=None) -> "SpotifyAlbum":
     """Ссылка → данные альбома (разобрать ссылку + запросить API)."""
     album_id = resolve_album_id(link_text)
-    return fetch_album(album_id)
+    return fetch_album(album_id, catalog=catalog)
 
 
 def save_image_bytes(raw: bytes) -> str | None:

@@ -1,25 +1,4 @@
-"""Задача 30: режимы «Локально/Облачно», «Выгрузить», БД в профиле.
-
-Покрывает:
-  1. Переключатель режима (кнопка-БД в сайдбаре): клик меняет
-     Локально ↔ Облачно; в «Облачно» рабочая зона — «В разработке»,
-     поиск выключен, кнопка отмечена (checked); надпись в верхней
-     полосе справа («Локально»/«Облачно»); обратное переключение
-     возвращает РОВНО ту же страницу; из облака открылись «Комнаты» —
-     возврат тоже в облако; локальные действия возвращают «Локально».
-  2. Кнопка «Выгрузить» на странице альбома: слева от
-     «Редактировать», неактивна (клики невозможны), подсказка
-     «В разработке».
-  3. Профиль: вкладка «Настройки» переименована в «Данные», добавлена
-     новая «Настройки» с «Экспортировать БД»/«Импортировать БД»
-     (проводники QFileDialog); экспорт — ZIP (library.db + covers/);
-     импорт ZIP и «голого» .db заменяет локальное наполнение (альбомы,
-     исполнители, обложки возвращаются); битые файлы дают красную
-     ошибку и НЕ меняют базу; база без аккаунтов — возврат к входу;
-     сигнал db_imported обновляет главную и возвращает «Локально».
-
-ВНИМАНИЕ: тесты СТИРАЮТ data/ — не запускать на живой библиотеке!
-"""
+"""Проверки облачного диалога, страницы альбома и импорта SQLite."""
 
 import os
 import shutil
@@ -132,96 +111,45 @@ win.show()
 QTest.qWait(200)
 
 # ============================================================
-print("--- 1. Метка режима в верхней полосе ---")
-lbl = win.top_bar.mode_label
-check("метка существует и «Локально»", lbl.text() == "Локально")
+print("--- 1. Верхняя полоса и кнопка облака ---")
 search = win.top_bar.search_input
-lbl_x = lbl.mapTo(win, QPoint(0, 0)).x()
-search_right = search.mapTo(win, QPoint(0, 0)).x() + search.width()
-check("метка СПРАВА от поиска", lbl_x > search_right)
-check("метка у правого края полосы",
-      win.top_bar.width() - 16 - lbl.width() - lbl_x <= 4)
+search_center = search.mapTo(win.top_bar, search.rect().center()).x()
+check("поиск центрирован", abs(search_center - win.top_bar.rect().center().x()) <= 2)
+check("метка режима удалена", not hasattr(win.top_bar, "mode_label"))
+btn = win.sidebar.btn_cloud_upload
+check("квадратная кнопка между профилем и «+»",
+      btn.width() == btn.height() == 40
+      and win.sidebar.btn_profile.x() < btn.x() < win.sidebar.btn_add.x())
+check("кнопка открывает облачную загрузку",
+      not btn.isCheckable() and btn.accessibleName() == "Загрузить в облако")
 
-# ============================================================
-print("--- 2. Кнопка-БД в сайдбаре ---")
-btn = win.sidebar.btn_mode
-check("кнопка существует", btn is not None)
-check("квадрат 40×40, как соседи",
-      btn.width() == 40 and btn.height() == 40)
-check("между профилем и «+»",
-      btn.x() > win.sidebar.btn_profile.x()
-      and win.sidebar.btn_add.x() > btn.x() + btn.width())
-check("checkable, по умолчанию не отмечена",
-      btn.isCheckable() and not btn.isChecked())
-check("подсказка называет текущий режим", "Локально" in btn.toolTip())
-
-# ============================================================
-print("--- 3. Переключение в «Облачно» ---")
-QTest.mouseClick(btn, Qt.MouseButton.LeftButton)
-QTest.qWait(100)
-check("надпись сменилась на «Облачно»",
-      win.top_bar.mode_label.text() == "Облачно")
-check("рабочая зона — заглушка",
-      win.pages.currentWidget() is win.cloud_page)
-check("кнопка отмечена (checked)", btn.isChecked())
-check("подсказка теперь про «Облачно»", "Облачно" in btn.toolTip())
-check("сайдбар и полоса на месте (это не оверлей)",
-      win.sidebar.isVisible() and win.top_bar.isVisible())
-dev = win.cloud_page.lbl_dev
-check("текст «В разработке»", dev.text() == "В разработке")
-check("крупный полупрозрачный шрифт (44px)",
-      dev.font().pixelSize() == 44)
-lc, pc = dev.geometry().center(), win.cloud_page.rect().center()
-check("надпись по центру рабочей зоны",
-      abs(lc.x() - pc.x()) <= 2 and abs(lc.y() - pc.y()) <= 2)
-check("поиск выключен в облачном режиме", not search.isEnabled())
-check("панель поиска скрыта", not win.search_panel.isVisible())
-
-# Обратно — режим и надпись возвращаются
-QTest.mouseClick(btn, Qt.MouseButton.LeftButton)
-QTest.qWait(100)
-check("обратно: «Локально» в полосе",
-      win.top_bar.mode_label.text() == "Локально")
-check("обратно: главная в рабочей зоне",
-      win.pages.currentWidget() is win.home_page)
-check("обратно: кнопка не отмечена", not btn.isChecked())
-check("обратно: поиск включён", search.isEnabled())
-
-# ============================================================
-print("--- 4. Возврат на ТУ ЖЕ страницу ---")
+print("--- 2. Диалог облака сохраняет страницу ---")
 album0 = STORE.albums[0]
 win.open_album(album0)
 QTest.qWait(50)
-check("открыт альбом", win.pages.currentWidget() is win.album_page)
-win.set_view_mode("cloud")
+QTest.mouseClick(btn, Qt.MouseButton.LeftButton)
+QTest.qWait(180)
+dlg = win._cloud_upload
+check("окно подтверждения открывается поверх альбома",
+      dlg.isVisible() and win.pages.currentWidget() is win.album_page)
+check("размытый фон покрывает окно, а карточка центрирована",
+      dlg._background is not None and not dlg._background.isNull()
+      and dlg.size() == win.size()
+      and dlg.geometry().topLeft() == win.mapToGlobal(QPoint())
+      and (dlg.card.geometry().center() - dlg.rect().center()).manhattanLength() <= 2)
+win.resize(1280, 840)
 QTest.qWait(50)
-check("из альбома в облако — заглушка",
-      win.pages.currentWidget() is win.cloud_page)
-win.set_view_mode("local")
+check("размытая область следует за размером окна",
+      dlg.size() == win.size() and dlg.geometry().topLeft() == win.mapToGlobal(QPoint()))
+check("вопрос и все действия на месте",
+      dlg.confirm_title.text() == "Переместить все локальные данные в облако?"
+      and [dlg.yes_button.text(), dlg.no_button.text(), dlg.preview_button.text()] == ["Да", "Нет", "Предосмотр"])
+QTest.keyClick(dlg, Qt.Key.Key_Escape)
 QTest.qWait(50)
-check("из облака — вернулись на страницу альбома",
-      win.pages.currentWidget() is win.album_page)
+check("Esc закрывает диалог и сохраняет страницу",
+      not dlg.isVisible() and dlg._background is None and win.pages.currentWidget() is win.album_page)
+check("поиск остаётся доступен", search.isEnabled())
 
-# Локальные действия возвращают «Локально» автоматически
-win.set_view_mode("cloud")
-win.open_list("albums")
-QTest.qWait(50)
-check("открытие списка вернуло «Локально»",
-      win._view_mode == "local"
-      and win.pages.currentWidget() is win.list_page)
-win.close_list()
-
-win.set_view_mode("cloud")
-win.open_create_choice()
-QTest.qWait(50)
-check("«+» из облака вернул «Локально» и открыл выбор",
-      win._view_mode == "local"
-      and win._choice_overlay is not None
-      and win._choice_overlay.isVisible())
-win._choice_overlay.close_overlay()
-QTest.qWait(50)
-
-# ============================================================
 print("--- 5. Кнопка «Выгрузить» на странице альбома ---")
 win.open_album(album0)
 QTest.qWait(50)
@@ -344,7 +272,6 @@ check("сессия пережила импорт",
 check("сигнал db_imported: главная показана, стек очищен",
       win.pages.currentWidget() is win.home_page
       and win._nav_stack == [])
-check("режим после импорта — «Локально»", win._view_mode == "local")
 check("карточка профиля перечитана",
       ov.lbl_name.text() == "Георгий")
 

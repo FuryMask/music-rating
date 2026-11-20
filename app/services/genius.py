@@ -769,20 +769,23 @@ def parse_album_html(html: str, path: str) -> GeniusAlbum:
     )
 
 
-def fetch_album(album_path: str) -> GeniusAlbum:
+def fetch_album(album_path: str, *, catalog=None) -> GeniusAlbum:
     """Скачать страницу альбома, разобрать её и достроить исполнителей
     треков: официальное API (по id) + страницы самих треков."""
     url = album_path if album_path.startswith("http") else PAGE_BASE + album_path
     html = _get_bytes(url).decode("utf-8", errors="replace")
     album = parse_album_html(html, album_path)
-    album = _enrich_performers(album)
+    album = _enrich_performers(album, catalog=catalog)
     return _enrich_from_track_pages(album)
 
 
 # --- Официальный API: полные исполнители трека ----------------------------
 def _song_performers_from_payload(payload: bytes) -> list[str]:
     """Исполнители из JSON-ответа /songs/<id> (primary + featured)."""
-    data = json.loads(payload)
+    return _song_performers(json.loads(payload))
+
+
+def _song_performers(data) -> list[str]:
     if not isinstance(data, dict):
         return []
     response = data.get("response")
@@ -858,7 +861,7 @@ def fetch_song_performers(song_id: int, *, token: str | None = None) -> list[str
     return names
 
 
-def _enrich_performers(album: GeniusAlbum) -> GeniusAlbum:
+def _enrich_performers(album: GeniusAlbum, *, catalog=None) -> GeniusAlbum:
     """Достроить исполнителей треков полными списками из API.
 
     На странице альбома соисполнители коллабораций («The Weeknd &
@@ -870,6 +873,19 @@ def _enrich_performers(album: GeniusAlbum) -> GeniusAlbum:
     чтобы мертвый API не растягивал загрузку альбома на минуты.
     """
     token = load_access_token()
+    if catalog is not None and not token:
+        from app.services.music_catalog import CatalogError
+
+        ids = list(dict.fromkeys(track.song_id for track in album.tracks if track.song_id))
+        performers = {}
+        for start in range(0, len(ids), 20):
+            try:
+                performers.update(catalog.request("genius-songs", ids=ids[start:start + 20]))
+            except CatalogError:
+                break  # Страницы треков остаются доступны при сбое API.
+        for track in album.tracks:
+            _merge_api_performers(track, _song_performers(performers.get(str(track.song_id))))
+        return album
     if not token:
         return album
     failures = 0
@@ -884,12 +900,17 @@ def _enrich_performers(album: GeniusAlbum) -> GeniusAlbum:
                 break
             continue
         failures = 0
+        _merge_api_performers(track, api_names)
+    return album
+
+
+def _merge_api_performers(track: GeniusTrack, api_names: list[str]) -> None:
+    if api_names:
         names = list(api_names)
         for name in track.artists:
             if not any(name.casefold() == n.casefold() for n in names):
                 names.append(name)
         track.artists = names
-    return album
 
 
 # --- Страницы треков: исполнители из самого трека --------------------------
@@ -1019,10 +1040,10 @@ def _enrich_from_track_pages(album: GeniusAlbum) -> GeniusAlbum:
     return album
 
 
-def load_album_from_link(link_text: str) -> GeniusAlbum:
+def load_album_from_link(link_text: str, *, catalog=None) -> GeniusAlbum:
     """Ссылка → данные альбома (разобрать ссылку + скачать страницу)."""
     album_path = resolve_album_path(link_text)
-    return fetch_album(album_path)
+    return fetch_album(album_path, catalog=catalog)
 
 
 def save_image_bytes(raw: bytes) -> str | None:

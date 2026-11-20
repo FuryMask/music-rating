@@ -163,6 +163,10 @@ class AlbumRatings:
     rater_names: list[str] = field(default_factory=list)   # столбцы
     values: list[list[float | None]] = field(default_factory=list)
     rated_at: str = ""          # момент сохранения оценок (ISO)
+    rater_ids: list[str | None] = field(default_factory=list)
+
+    def rater_id(self, column: int) -> str | None:
+        return self.rater_ids[column] if column < len(self.rater_ids) else None
 
     # --- Заполненность -------------------------------------------------
     def filled_count(self) -> int:
@@ -276,6 +280,7 @@ class Album:
                                  # (защита от повторного создания по той же ссылке)
     ratings: AlbumRatings | None = None   # оценки по трекам/участникам
                                  # (мастер оценивания; rating — средняя)
+    cloud_id: str = ""
 
     @property
     def artists_text(self) -> str:

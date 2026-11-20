@@ -30,17 +30,11 @@ class ProfileButton(ActionButton):
         super().__init__("account", parent)
 
 
-class DbModeButton(ActionButton):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("cloud-mode", parent)
-        self.setCheckable(True)
-
-
 class Sidebar(QFrame):
     add_album_clicked = Signal()
     profile_clicked = Signal()
     update_clicked = Signal()
-    mode_clicked = Signal()  # переключить режим Локально/Облачно
+    cloud_upload_clicked = Signal()
     destination_clicked = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -97,9 +91,11 @@ class Sidebar(QFrame):
         self.btn_profile.setAccessibleName("Профиль")
         self.btn_profile.clicked.connect(self.profile_clicked.emit)
 
-        self.btn_mode = DbModeButton(self)
-        self.btn_mode.setObjectName("modeButton")
-        self.btn_mode.clicked.connect(self.mode_clicked.emit)
+        self.btn_cloud_upload = ActionButton("cloud-upload", self)
+        self.btn_cloud_upload.setObjectName("cloudUploadButton")
+        self.btn_cloud_upload.setToolTip("Загрузить в облако")
+        self.btn_cloud_upload.setAccessibleName("Загрузить в облако")
+        self.btn_cloud_upload.clicked.connect(self.cloud_upload_clicked.emit)
 
         self.btn_add = PlusButton(self)
         self.btn_add.setObjectName("plusButton")
@@ -111,7 +107,7 @@ class Sidebar(QFrame):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(12)
         row.addWidget(self.btn_profile)
-        row.addWidget(self.btn_mode)
+        row.addWidget(self.btn_cloud_upload)
         row.addWidget(self.btn_add)
         row.addStretch()
         layout.addLayout(row)
@@ -119,7 +115,6 @@ class Sidebar(QFrame):
         self.version_label.setObjectName("appVersion")
         layout.addWidget(self.version_label)
 
-        self.set_view_mode(cloud=False)
         self.set_destination("home")
 
     def paintEvent(self, event) -> None:
@@ -139,18 +134,3 @@ class Sidebar(QFrame):
     def set_destination(self, destination: str | None) -> None:
         for key, button in self._destinations.items():
             button.setChecked(key == destination)
-
-    def set_view_mode(self, cloud: bool) -> None:
-        """Отразить режим на кнопке: checked = «Облачно».
-
-        Заодно подсказка на кнопке называет ОБА режима и текущий:
-        надпись в верхней полосе
-        (TopBar.mode_label) дублирует режим для уверенности.
-        """
-        self.btn_mode.setChecked(cloud)
-        current = "Облачно" if cloud else "Локально"
-        other = "Локально" if cloud else "Облачно"
-        self.btn_mode.setToolTip(
-            f"Режим просмотра: {current}. Нажмите — «{other}»"
-        )
-        self.btn_mode.setAccessibleName(f"Режим просмотра: {current}")

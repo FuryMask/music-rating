@@ -128,8 +128,7 @@ QLabel {{
 #collectionPage,
 #artistPage,
 #albumPage,
-#artistEditorPage,
-#cloudPage {{
+#artistEditorPage {{
     background-color: {BG_MAIN};
 }}
 
@@ -204,16 +203,6 @@ QLineEdit#searchInput:disabled {{
 #emptyHint {{
     color: {TEXT_MUTED};
     font-size: 13px;
-}}
-
-/* «В разработке» на странице «Облачно»: крупно и полупрозрачно */
-#devPlaceholder {{
-    color: rgba(220, 234, 255, 155);
-    font-size: 44px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    background: qradialgradient(cx:0.5, cy:0.50, radius:0.43,
-        stop:0 rgba(86, 116, 179, 62), stop:1 transparent);
 }}
 
 /* ---------- Карточка альбома ---------- */
@@ -302,7 +291,7 @@ QLineEdit#searchInput:disabled {{
 /* ---------- Кнопки сайдбара ---------- */
 #plusButton,
 #profileButton,
-#modeButton {{
+#cloudUploadButton {{
     background-color: {BG_INPUT};
     border: 1px solid {BORDER};
     border-radius: 13px;
@@ -310,16 +299,9 @@ QLineEdit#searchInput:disabled {{
 
 #plusButton:hover,
 #profileButton:hover,
-#modeButton:hover {{
+#cloudUploadButton:hover {{
     background-color: {BG_HOVER};
     border-color: {FOCUS};
-}}
-
-/* Кнопка-БД переключения режима: отмеченное состояние (= «Облачно»)
-   подсвечивается голубым акцентом, как выбранные вкладки */
-#modeButton:checked {{
-    background-color: {ACCENT_SOFT};
-    border: 1px solid {ACCENT_BORDER};
 }}
 
 /* Неактивная кнопка «Выгрузить» — серая, без ховер-реакций */
@@ -1245,14 +1227,14 @@ QMenu::separator {{
 }}
 #navButton:pressed {{ background: rgba(193, 218, 255, 82); }}
 #navButton:focus {{ border-color: {ACCENT}; }}
-#modeLabel {{
-    color: #e3edff;
-    background: rgba(185, 214, 255, 27);
-    border: 1px solid rgba(213, 230, 255, 59);
-    border-radius: 12px;
-    padding: 4px 10px;
-    font-weight: 600;
+#cloudPreview {{
+    color: {TEXT};
+    background: {BG_INPUT};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    padding: 5px;
 }}
+#cloudPreview::item {{ padding: 4px; }}
 #contentArea {{
     background: {BG_MAIN};
     border: 1px solid {BORDER_SOFT};
@@ -1266,7 +1248,7 @@ QMenu::separator {{
 #plusButton:hover {{ background: #586caa; }}
 #primaryButton:focus, #ghostButton:focus, #rateNowButton:focus,
 #backButton:focus, #plusButton:focus,
-#profileButton:focus, #modeButton:focus {{
+#profileButton:focus, #cloudUploadButton:focus {{
     border: 1px solid #e1edff;
 }}
 """

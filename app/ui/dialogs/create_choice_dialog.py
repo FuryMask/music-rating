@@ -77,6 +77,7 @@ from PySide6.QtWidgets import (
 from app.services import deezer, genius, spotify, ytmusic, yandex_music
 from app.services.deezer import DeezerAlbum, DeezerError
 from app.services.genius import GeniusAlbum, GeniusError
+from app.services.music_catalog import CatalogError, MusicCatalog
 from app.services.spotify import SpotifyAlbum, SpotifyError
 from app.services.yandex_music import YandexMusicAlbum, YandexMusicError
 from app.services.ytmusic import YTMusicAlbum, YTMusicError
@@ -131,9 +132,11 @@ class CreateChoiceOverlay(QWidget):
 
     manual_requested = Signal()       # «Создать вручную»
     album_loaded = Signal(object)     # данные альбома — загрузка удалась
+    cloud_sign_in_requested = Signal()
 
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, *, catalog: MusicCatalog | None = None) -> None:
         super().__init__(parent)
+        self._catalog = catalog
         self.setObjectName("choiceOverlay")
         self._bg: QPixmap | None = None
         self._loading = False
@@ -286,8 +289,8 @@ class CreateChoiceOverlay(QWidget):
         v.addWidget(title)
 
         caption = QLabel(
-            "Вставьте ключи приложения, созданного на "
-            "developer.spotify.com:", page,
+            "Войдите в облако для использования общего ключа Spotify или укажите свои ключи."
+            if self._catalog is not None else "Вставьте ключи приложения с developer.spotify.com.", page,
         )
         caption.setObjectName("fieldLabel")
         caption.setWordWrap(True)
@@ -332,6 +335,11 @@ class CreateChoiceOverlay(QWidget):
         self.btn_keys_back.setObjectName("ghostButton")
         self.btn_keys_back.clicked.connect(self._back_to_link)
         buttons.addWidget(self.btn_keys_back)
+        if self._catalog is not None:
+            button = HoverButton("Войти в облако", page)
+            button.setObjectName("ghostButton")
+            button.clicked.connect(self._request_cloud_sign_in)
+            buttons.addWidget(button)
         buttons.addStretch(1)
         self.btn_keys_save = HoverButton("Сохранить и загрузить", page)
         self.btn_keys_save.setObjectName("primaryButton")
@@ -426,6 +434,10 @@ class CreateChoiceOverlay(QWidget):
         self.pages.setCurrentIndex(2)
         self.input_client_id.setFocus()
 
+    def _request_cloud_sign_in(self) -> None:
+        self._back_to_link()
+        self.cloud_sign_in_requested.emit()
+
     def _save_keys_and_load(self) -> None:
         """Сохранить ключи и прокси на диск (только локально) и повторить загрузку."""
         client_id = self.input_client_id.text().strip()
@@ -461,7 +473,10 @@ class CreateChoiceOverlay(QWidget):
             self._show_dup("Кажется, этот альбом уже создан.")
             return
         provider = detect_provider(link)
-        if provider == "spotify" and spotify.load_credentials() is None:
+        catalog = self._catalog if self._catalog is not None and self._catalog.available() else None
+        local_spotify = provider == "spotify" and spotify.load_credentials() is not None
+        spotify_catalog = catalog if not local_spotify else None
+        if provider == "spotify" and not local_spotify and spotify_catalog is None:
             # Ключей ещё нет: окно ключей, ссылка остаётся в поле —
             # после сохранения загрузка повторится сама
             self._open_keys_page()
@@ -486,20 +501,21 @@ class CreateChoiceOverlay(QWidget):
         error_text = ""
         try:
             if provider == "spotify":
-                data = spotify.load_album_from_link(link)
+                data = (spotify.load_album_from_link(link, catalog=spotify_catalog) if spotify_catalog
+                        else spotify.load_album_from_link(link))
             elif provider == "deezer":
                 data = deezer.load_album_from_link(link)
             elif provider == "ytmusic":
                 data = ytmusic.load_album_from_link(link)
             elif provider == "genius":
-                data = genius.load_album_from_link(link)
+                data = genius.load_album_from_link(link, catalog=catalog) if catalog else genius.load_album_from_link(link)
             elif provider == "yandex":
                 data = yandex_music.load_album_from_link(link)
             else:
                 error_text = NOT_LINK_MSG
         except (
             DeezerError, SpotifyError, YTMusicError, GeniusError,
-            YandexMusicError,
+            YandexMusicError, CatalogError,
         ) as exc:
             error_text = str(exc)
 

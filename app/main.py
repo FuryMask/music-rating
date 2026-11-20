@@ -23,6 +23,7 @@ def main() -> int:
     window = MainWindow()
     window.showMaximized()  # развёрнутое окно (не полноэкранный режим)
     window.updates.start()
+    window._cloud_upload.start_monitoring()
     if STORE.current_user is None:
         QTimer.singleShot(0, window.open_profile)
 

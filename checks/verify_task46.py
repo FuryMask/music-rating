@@ -7,6 +7,7 @@ import tempfile
 from time import monotonic
 import unittest
 from unittest.mock import patch
+from uuid import UUID
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSettings, QThreadPool, Qt
 from PySide6.QtGui import QColor, QEnterEvent
@@ -70,10 +71,10 @@ class ListeningModeTest(unittest.TestCase):
         ])
         wizard = RateAlbumOverlay(self.window)
         self.addCleanup(wizard._close_player)
+        wizard.set_cloud_members({str(UUID(int=index)): f"Участник {index}" for index in range(1, 15)})
         wizard.open_for(album)
-        wizard._raters = [f"Участник {index + 1}" for index in range(14)]
-        wizard._selected = set(wizard._raters)
-        wizard._values = [[None] * len(wizard._raters) for _ in album.tracks]
+        for chip in wizard.rater_buttons.values():
+            chip.click()
         wizard.go_to_step(1)
         wizard.btn_listen.click()
         choice = wizard._playback_choice
