@@ -16,6 +16,8 @@ __pycache__/
 /dev/
 /build/
 /dist/
+/supabase/.temp/
+/supabase/.branches/
 /checks/logs/
 /checks/screenshots/
 /checks/archive/

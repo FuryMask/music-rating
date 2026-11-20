@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS albums (
     rating     REAL,
     rated_at   TEXT,
     created_at TEXT NOT NULL DEFAULT '',
-    source_id  TEXT NOT NULL DEFAULT ''
+    source_id  TEXT NOT NULL DEFAULT '',
+    cloud_id   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS album_artists (
@@ -160,6 +161,7 @@ CREATE TABLE IF NOT EXISTS album_raters (
     album_id TEXT NOT NULL,
     position INTEGER NOT NULL,
     name     TEXT NOT NULL,
+    cloud_user_id TEXT,
     PRIMARY KEY (album_id, position)
 );
 
@@ -210,6 +212,13 @@ class MusicStore:
                 "ALTER TABLE artists ADD COLUMN avatar_path TEXT"
             )
             self._conn.commit()
+        for table, column, definition in (
+            ("albums", "cloud_id", "TEXT NOT NULL DEFAULT ''"),
+            ("album_raters", "cloud_user_id", "TEXT"),
+        ):
+            if column not in {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        self._conn.commit()
         if self._conn.execute("SELECT 1 FROM raters LIMIT 1").fetchone() is not None:
             self._conn.execute("DELETE FROM raters")
             self._conn.commit()
@@ -232,6 +241,28 @@ class MusicStore:
     def _meta_delete(self, key: str) -> None:
         self._conn.execute("DELETE FROM meta WHERE key = ?", (key,))
         self._conn.commit()
+
+    def cloud_state(self, key: str) -> str | None:
+        return self._meta_get(f"cloud_sync:{key}")
+
+    def record_cloud_upload(self, key: str, value: str, album_ids: dict[str, str]) -> None:
+        with self._conn:
+            self._conn.executemany("UPDATE albums SET cloud_id = ? WHERE id = ?",
+                                   [(cloud_id, album_id) for album_id, cloud_id in album_ids.items()])
+            self._conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) "
+                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (f"cloud_sync:{key}", value))
+        for album in self.albums:
+            if album.id in album_ids:
+                album.cloud_id = album_ids[album.id]
+
+    def apply_cloud_library(self, albums: list[Album], artists: list[Artist], state: dict[str, str]) -> None:
+        previous = self.albums, self.artists
+        self.albums, self.artists = albums, artists
+        try:
+            self._save(state)
+        except sqlite3.Error:
+            self.albums, self.artists = previous
+            raise
 
     # --- Участники оценивания (= аккаунты) ---------------------------------
     @property
@@ -372,8 +403,8 @@ class MusicStore:
             if ratings is None:
                 continue
             ratings.rater_names = [
-                name if rater == old else rater
-                for rater in ratings.rater_names
+                name if rater == old and ratings.rater_id(column) is None else rater
+                for column, rater in enumerate(ratings.rater_names)
             ]
         self._save()
         return None
@@ -389,9 +420,12 @@ class MusicStore:
         self.users = [u for u in self.users if u.id != user.id]
         for album in self.albums:
             ratings = album.ratings
-            if ratings is None or user.username not in ratings.rater_names:
+            if ratings is None:
                 continue
-            column = ratings.rater_names.index(user.username)
+            column = next((i for i, name in enumerate(ratings.rater_names)
+                           if name == user.username and ratings.rater_id(i) is None), None)
+            if column is None:
+                continue
             new_names = [
                 name for i, name in enumerate(ratings.rater_names)
                 if i != column
@@ -407,6 +441,7 @@ class MusicStore:
                     rater_names=new_names,
                     values=new_values,
                     rated_at=ratings.rated_at,
+                    rater_ids=[ratings.rater_id(i) for i in range(len(ratings.rater_names)) if i != column],
                 )
                 album.ratings = updated
                 album.rating = updated.album_average()
@@ -823,7 +858,8 @@ class MusicStore:
         return None
 
     def rate_album(self, album: Album, rater_names: list[str],
-                   values: list[list[float | None]]) -> AlbumRatings:
+                   values: list[list[float | None]], *, rater_ids: list[str | None] | None = None,
+                   preserve_other_raters: bool = False) -> AlbumRatings:
         """Сохранить оценки альбома из мастера оценивания.
 
         rater_names — участники по столбцам; values — матрица
@@ -837,7 +873,20 @@ class MusicStore:
             rater_names=list(rater_names),
             values=[list(row) for row in values],
             rated_at=datetime.now().isoformat(timespec="seconds"),
+            rater_ids=list(rater_ids or ()),
         )
+        if preserve_other_raters and (previous := album.ratings) is not None:
+            selected = {ratings.rater_id(i) or name.casefold() for i, name in enumerate(rater_names)}
+            selected_names = {name.casefold() for name in rater_names}
+            ratings.rater_ids = [ratings.rater_id(i) for i in range(len(rater_names))]
+            for i, name in enumerate(previous.rater_names):
+                rater_id = previous.rater_id(i)
+                if (rater_id or name.casefold()) in selected or (rater_id is None and name.casefold() in selected_names):
+                    continue
+                ratings.rater_names.append(name)
+                ratings.rater_ids.append(rater_id)
+                for row, old_row in zip(ratings.values, previous.values):
+                    row.append(old_row[i])
         album.ratings = ratings
         album.rating = ratings.album_average()
         album.rated_at = ratings.rated_at
@@ -974,10 +1023,10 @@ class MusicStore:
         self.albums = []
         for row in main_cur.execute(
             "SELECT id, title, year, genre, region, cover_path, rating, "
-            "rated_at, created_at, source_id FROM albums ORDER BY position"
+            "rated_at, created_at, source_id, cloud_id FROM albums ORDER BY position"
         ):
             (album_id, title, year, genre, region, cover_path,
-             rating, rated_at, created_at, source_id) = row
+             rating, rated_at, created_at, source_id, cloud_id) = row
             artist_names = [
                 r[0] for r in album_cur.execute(
                     "SELECT name FROM album_artists "
@@ -1004,13 +1053,11 @@ class MusicStore:
             # Участники ЭТОГО альбома (столбцы оценок) — хранятся у
             # альбома, а не берутся из глобального списка raters:
             # состав оценивавших может отличаться от текущей шестёрки
-            album_raters = [
-                r[0] for r in rating_cur.execute(
-                    "SELECT name FROM album_raters "
+            album_raters = list(rating_cur.execute(
+                    "SELECT name, cloud_user_id FROM album_raters "
                     "WHERE album_id = ? ORDER BY position",
                     (album_id,),
-                )
-            ]
+            ))
             grid: list[list[float | None]] = [
                 [None] * len(album_raters) for _ in tracks
             ]
@@ -1026,8 +1073,10 @@ class MusicStore:
                 v is not None for row in grid for v in row
             ):
                 ratings = AlbumRatings(
-                    rater_names=album_raters,
+                    rater_names=[name for name, _ in album_raters],
                     values=grid,
+                    rated_at=rated_at or "",
+                    rater_ids=[rater_id for _, rater_id in album_raters],
                 )
             self.albums.append(Album(
                 title=title,
@@ -1043,9 +1092,10 @@ class MusicStore:
                 created_at=created_at,
                 source_id=source_id,
                 ratings=ratings,
+                cloud_id=cloud_id,
             ))
 
-    def _save(self) -> None:
+    def _save(self, cloud_state: dict[str, str] | None = None) -> None:
         """Переписать базу целиком одним изменением (одна транзакция).
 
         Библиотека небольшая (десятки альбомов), полная перезапись
@@ -1084,12 +1134,12 @@ class MusicStore:
                 cur.execute(
                     "INSERT INTO albums (position, id, title, year, genre, "
                     "region, cover_path, rating, rated_at, created_at, "
-                    "source_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "source_id, cloud_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         position, album.id, album.title, album.year,
                         album.genre, album.region, album.cover_path,
                         album.rating, album.rated_at, album.created_at,
-                        album.source_id,
+                        album.source_id, album.cloud_id,
                     ),
                 )
                 for a_pos, name in enumerate(album.artist_names):
@@ -1115,8 +1165,8 @@ class MusicStore:
                     for r_pos, name in enumerate(album.ratings.rater_names):
                         cur.execute(
                             "INSERT INTO album_raters (album_id, position, "
-                            "name) VALUES (?, ?, ?)",
-                            (album.id, r_pos, name),
+                            "name, cloud_user_id) VALUES (?, ?, ?, ?)",
+                            (album.id, r_pos, name, album.ratings.rater_id(r_pos)),
                         )
                     for t_pos, row in enumerate(album.ratings.values):
                         for r_pos, value in enumerate(row):
@@ -1126,12 +1176,18 @@ class MusicStore:
                                 "VALUES (?, ?, ?, ?)",
                                 (album.id, t_pos, r_pos, value),
                             )
+            if cloud_state:
+                cur.executemany("INSERT INTO meta (key, value) VALUES (?, ?) "
+                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                [(f"cloud_sync:{key}", value) for key, value in cloud_state.items()])
             self._conn.commit()
         except sqlite3.Error:
             try:
                 self._conn.rollback()
             except sqlite3.Error:
                 pass
+            if cloud_state is not None:
+                raise
             # нет доступа к диску/базе — работаем в памяти
 
     # --- Экспорт / импорт базы (вкладка «Настройки» профиля) ---------------

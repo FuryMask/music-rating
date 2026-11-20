@@ -151,6 +151,10 @@ class RateAlbumOverlay(QWidget):
         self._album: Album | None = None
         self._selected: set[str] = set()      # отмеченные участники
         self._raters: list[str] = []          # столбцы этапа 2
+        self._rater_keys: list[str] = []
+        self._rater_ids: list[str | None] = []
+        self._cloud_members: dict[str, str] = {}
+        self._rater_options: dict[str, str] = {}
         self._values: list[list[float | None]] = []
         self._cells: list[list[QLineEdit]] = []
         self._avg_labels: list[QLabel] = []
@@ -256,14 +260,13 @@ class RateAlbumOverlay(QWidget):
         v.addStretch(1)
         return page
 
-    def _rebuild_rater_chips(self) -> None:
-        """Пересобрать плитки участников по ТЕКУЩЕМУ списку аккаунтов.
+    def set_cloud_members(self, members: dict[str, str]) -> None:
+        self._cloud_members = dict(members)
+        if self.isVisible() and self.steps.currentIndex() == 0:
+            self._rebuild_rater_chips()
+            self._update_next_state()
 
-        Список участников — зарегистрированные аккаунты: пользователь
-        мог создать новые (или удалить чей-то аккаунт) с прошлого
-        открытия мастера — плитки всегда отражают актуальный состав
-        (Task 20).
-        """
+    def _rebuild_rater_chips(self) -> None:
         # Чистим прошлую сборку
         while self.raters_flow.count():
             item = self.raters_flow.takeAt(0)
@@ -273,17 +276,23 @@ class RateAlbumOverlay(QWidget):
                 widget.deleteLater()
         self.rater_buttons = {}
         holder = self.raters_flow.parentWidget()
-        for name in STORE.raters:
+        self._rater_options = self._cloud_members or {name: name for name in STORE.raters}
+        self._options_are_cloud = bool(self._cloud_members)
+        self._selected.intersection_update(self._rater_options)
+        for key, name in self._rater_options.items():
             btn = RaterChip(name, holder)
             btn.setObjectName("raterChip")
+            btn.setChecked(key in self._selected)
             btn.toggled.connect(
-                lambda checked, n=name: self._on_rater_toggled(n, checked)
+                lambda checked, member=key: self._on_rater_toggled(member, checked)
             )
             self.raters_flow.addWidget(btn)
-            self.rater_buttons[name] = btn
+            self.rater_buttons[key] = btn
         if self.rater_buttons:
             self.lbl_raters_hint.setText(
                 "Выберите участников — каждый получит свой столбец оценок."
+                if self._cloud_members else
+                "Показаны локальные профили. Для списка из Supabase войдите в облако."
             )
         else:
             self.lbl_raters_hint.setText(
@@ -348,14 +357,22 @@ class RateAlbumOverlay(QWidget):
     def _build_grid(self) -> None:
         # Состав участников не менялся с прошлой сборки — значения
         # сохраняем (вернулись «Назад» поправить клетки и вернулись)
-        if set(self._raters) != self._selected:
-            self._raters = [
-                name for name in STORE.raters if name in self._selected
-            ]
+        if set(self._rater_keys) != self._selected:
+            previous = {key: i for i, key in enumerate(self._rater_keys)}
+            saved = self._album.ratings if self._options_are_cloud else None
+            saved_keys = {saved.rater_id(i) or name.casefold(): i for i, name in enumerate(saved.rater_names)} if saved else {}
+            keys = [key for key in self._rater_options if key in self._selected]
+            names = [self._rater_options[key] for key in keys]
+            saved_columns = [saved_keys.get(key, saved_keys.get(name.casefold())) for key, name in zip(keys, names)]
             self._values = [
-                [None] * len(self._raters)
-                for _ in range(len(self._album.tracks))
+                [self._values[row][previous[key]] if key in previous
+                 else saved.values[row][column] if column is not None else None
+                 for key, column in zip(keys, saved_columns)]
+                for row in range(len(self._album.tracks))
             ]
+            self._raters = names
+            self._rater_keys = keys
+            self._rater_ids = keys if self._options_are_cloud else [None] * len(keys)
 
         # Чистим прошлую сборку
         while self.grid_v.count():
@@ -825,7 +842,8 @@ class RateAlbumOverlay(QWidget):
 
     def _finish(self) -> None:
         """«Готово»: оценки в базу, средняя — альбому, окно закрыто."""
-        STORE.rate_album(self._album, self._raters, self._values)
+        STORE.rate_album(self._album, self._raters, self._values, rater_ids=self._rater_ids,
+                         preserve_other_raters=True)
         album = self._album
         self.hide()
         self.album_rated.emit(album)
@@ -888,6 +906,8 @@ class RateAlbumOverlay(QWidget):
         self._album = album
         self._selected = set()
         self._raters = []
+        self._rater_keys = []
+        self._rater_ids = []
         self._values = []
         self._cells = []
         # Участники — актуальные аккаунты: могли появиться/удалиться

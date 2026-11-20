@@ -1,0 +1,4 @@
+project_id = "music-rating"
+
+[functions.music-catalog]
+verify_jwt = true

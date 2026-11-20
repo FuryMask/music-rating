@@ -14,11 +14,13 @@ from app.models import Album, Artist
 from app.services.backfill import ArtBackfiller
 from app.services.deezer import DeezerAlbum
 from app.services.genius import GeniusAlbum
+from app.services.music_catalog import MusicCatalog
 from app.services.spotify import SpotifyAlbum
 from app.services.updates import Updates
 from app.services.yandex_music import YandexMusicAlbum
 from app.services.ytmusic import YTMusicAlbum
 from app.store import STORE
+from app.ui.dialogs.cloud_upload_dialog import CloudUploadDialog
 from app.ui.dialogs.create_choice_dialog import CreateChoiceOverlay
 from app.ui.dialogs.delete_confirm_dialog import DeleteConfirmOverlay
 from app.ui.dialogs.profile_dialog import ProfileOverlay
@@ -27,12 +29,11 @@ from app.ui.pages import HomePage
 from app.ui.pages.album_detail import AlbumDetailPage
 from app.ui.pages.artist_detail import ArtistDetailPage
 from app.ui.pages.artist_editor import ArtistEditorPage
-from app.ui.pages.cloud_page import CloudStubPage
 from app.ui.pages.collection_page import CollectionPage
 from app.ui.pages.create_album import CreateAlbumOverlay
 from app.ui.pages.rate_album import RateAlbumOverlay
 from app.ui.sidebar import Sidebar
-from app.ui.top_bar import MODE_CLOUD, MODE_LOCAL, TopBar
+from app.ui.top_bar import TopBar
 from app.ui.widgets.drop_animation import pre_hide, run_drop_in
 from app.ui.widgets.page_stack import AnimatedStackedWidget
 from app.ui.widgets.search_results import SearchResultsPanel
@@ -60,11 +61,6 @@ class MainWindow(QMainWindow):
         # Стек навигации: каждый открытый экран запоминает, откуда он
         # открыт («шаг назад» вместо безусловного возврата на главную)
         self._nav_stack: list[tuple[str, object]] = []
-        # Режим просмотра: «local» (своё) / «cloud» (облако — заглушка).
-        # Страница, с которой ушли в «Облачно», запоминается —
-        # возвращаемся ровно на неё
-        self._view_mode = "local"
-        self._page_before_cloud: QWidget | None = None
         # Анимация «падения сверху» проигрывается один раз — при
         # первом показе окна (Task 31)
         self._drop_played = False
@@ -88,6 +84,11 @@ class MainWindow(QMainWindow):
 
         # 1. Верхняя полоса с поиском
         self.top_bar = TopBar(central)
+        self._cloud_upload = CloudUploadDialog(self)
+        self._cloud_upload.availability_changed.connect(self.top_bar.set_cloud_availability)
+        self._cloud_upload.library_downloaded.connect(self._on_cloud_downloaded)
+        self._cloud_upload.members_changed.connect(self._on_cloud_members_changed)
+        self.top_bar.cloud_button.clicked.connect(self._download_cloud_library)
         root.addWidget(self.top_bar)
         search_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
         search_shortcut.activated.connect(self._focus_search)
@@ -101,7 +102,7 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar(body)
         self.sidebar.add_album_clicked.connect(self.open_create_choice)
         self.sidebar.profile_clicked.connect(self.open_profile)
-        self.sidebar.mode_clicked.connect(self._toggle_view_mode)
+        self.sidebar.cloud_upload_clicked.connect(self.open_cloud_upload)
         self.sidebar.destination_clicked.connect(self._open_destination)
         self.updates = Updates(self)
         self.sidebar.update_clicked.connect(self.updates.install)
@@ -111,7 +112,7 @@ class MainWindow(QMainWindow):
         self.updates.installer_started.connect(self.close)
 
         # Рабочая зона — стек страниц: главная, альбом, исполнитель,
-        # полные списки «Смотреть все», заглушка «Облачно»
+        # полные списки «Смотреть все»
         self.pages = AnimatedStackedWidget(body)
         self.pages.setObjectName("contentArea")
         self.home_page = HomePage(self.pages)
@@ -119,13 +120,11 @@ class MainWindow(QMainWindow):
         self.artist_page = ArtistDetailPage(self.pages)
         self.artist_editor = ArtistEditorPage(self.pages)
         self.list_page = CollectionPage(self.pages)
-        self.cloud_page = CloudStubPage(self.pages)
         self.pages.addWidget(self.home_page)
         self.pages.addWidget(self.album_page)
         self.pages.addWidget(self.artist_page)
         self.pages.addWidget(self.artist_editor)
         self.pages.addWidget(self.list_page)
-        self.pages.addWidget(self.cloud_page)
 
         self.home_page.album_opened.connect(self.open_album)
         self.home_page.artist_opened.connect(self.open_artist)
@@ -259,6 +258,7 @@ class MainWindow(QMainWindow):
                 self._rate_overlay,        # мастер оценивания (локально)
                 self._after_create_overlay,  # «оценить сейчас?»
                 self._profile_overlay,     # профиль (вход/регистрация)
+                self._cloud_upload,
             )
         )
 
@@ -270,57 +270,37 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
-    # --- Режим просмотра: Локально / Облачно (Task 30) -------------------
-    def _toggle_view_mode(self) -> None:
-        """Клик по кнопке-БД: переключить Локально ↔ Облачно."""
-        self.set_view_mode(
-            "local" if self._view_mode == "cloud" else "cloud"
-        )
-
-    def set_view_mode(self, mode: str) -> None:
-        """Переключить режим просмотра рабочей зоны.
-
-        «Облачно»: содержимое рабочей зоны заменяется заглушкой
-        «В разработке» (cloud_page); страница, с которой ушли,
-        запоминается и возвращается при обратном переключении;
-        поиск отключается (ищется только локальная библиотека).
-        Надпись в верхней полосе и состояние кнопки-БД обновляются.
-        """
-        if mode == self._view_mode:
-            return
-        cloud = mode == "cloud"
-        self._view_mode = mode
+    def open_cloud_upload(self) -> None:
         self.search_panel.hide()
-        if cloud:
-            current = self.pages.currentWidget()
-            self._page_before_cloud = (
-                current if current is not self.cloud_page else None
-            )
-            self.pages.setCurrentWidget(self.cloud_page)
-            self.top_bar.search_input.setEnabled(False)
-            self.top_bar.search_input.setToolTip(
-                "Поиск работает в режиме «Локально»"
-            )
-        else:
-            self.top_bar.search_input.setEnabled(True)
-            self.top_bar.search_input.setToolTip("")
-            target = self._page_before_cloud or self.home_page
-            self._page_before_cloud = None
-            if target is self.home_page:
-                self.home_page.refresh()  # база могла измениться
-            self.pages.setCurrentWidget(target)
-        self.top_bar.set_mode_text(MODE_CLOUD if cloud else MODE_LOCAL)
-        self.sidebar.set_view_mode(cloud)
+        self._cloud_upload.open()
 
-    def _ensure_local_mode(self) -> None:
-        """Вернуть режим «Локально», если сейчас «Облачно».
+    def _download_cloud_library(self) -> None:
+        if self._any_overlay_visible() or self.pages.currentWidget() is self.artist_editor:
+            return
+        self.search_panel.hide()
+        self._cloud_upload.download()
 
-        Все входы в локальные данные (открытие альбома/исполнителя,
-        списки, создание) вызывают это: создав альбом в облачном
-        режиме, пользователь должен увидеть его — а не заглушку.
-        """
-        if self._view_mode == "cloud":
-            self.set_view_mode("local")
+    def _on_cloud_downloaded(self, skipped: int) -> None:
+        self.home_page.refresh()
+        albums = {album.id: album for album in STORE.albums}
+        artists = {artist.name: artist for artist in STORE.artists}
+        self._nav_stack = [(page, albums.get(data.id, data) if isinstance(data, Album)
+                            else artists.get(data.name, data) if isinstance(data, Artist) else data)
+                           for page, data in self._nav_stack]
+        if self.album_page.album is not None:
+            self.album_page.set_album(albums.get(self.album_page.album.id, self.album_page.album))
+        if self.artist_page.artist is not None:
+            self.artist_page.set_artist(artists.get(self.artist_page.artist.name, self.artist_page.artist))
+        if self.pages.currentWidget() is self.list_page:
+            self.list_page.show_mode(self.list_page.mode)
+        message = "Библиотека загружена из облака."
+        if skipped:
+            message += f" Сохранены локальные правки. Записей с отличиями: {skipped}."
+        notify(self, message)
+
+    def _on_cloud_members_changed(self, members: dict[str, str]) -> None:
+        if self._rate_overlay is not None:
+            self._rate_overlay.set_cloud_members(members)
 
     # --- Навигация со стеком: каждый экран помнит, откуда открыт ---
     def _push_current(self) -> None:
@@ -333,8 +313,6 @@ class MainWindow(QMainWindow):
             self._nav_stack.append(("artist", self.artist_page.artist))
         elif current is self.list_page:
             self._nav_stack.append(("list", self.list_page.mode))
-        elif current is self.cloud_page:
-            self._nav_stack.append(("cloud", None))
         else:
             self._nav_stack.append(("home", None))
 
@@ -362,13 +340,6 @@ class MainWindow(QMainWindow):
                 self.list_page.show_mode(obj)
                 self._show_page(self.list_page, back=True)
                 return
-            if kind == "cloud":
-                # Возврат в заглушку облачного режима (если его снова
-                # не включили — на главную, как из «home»)
-                if self._view_mode == "cloud":
-                    self._show_page(self.cloud_page, back=True)
-                    return
-                break
             if kind == "home":
                 break
         self._show_home()
@@ -396,17 +367,15 @@ class MainWindow(QMainWindow):
             destination = self.list_page.mode
         else:
             destination = None
-            if current is not self.cloud_page:
-                for kind, value in reversed(self._nav_stack):
-                    if kind in ("home", "list"):
-                        destination = value if kind == "list" else "home"
-                        break
+            for kind, value in reversed(self._nav_stack):
+                if kind in ("home", "list"):
+                    destination = value if kind == "list" else "home"
+                    break
         self.sidebar.set_destination(destination)
 
     def _open_destination(self, destination: str) -> None:
         current = self.pages.currentWidget()
         if destination == "home" and current is not self.home_page:
-            self._ensure_local_mode()
             self._nav_stack.clear()
             self.search_panel.hide()
             self._show_home()
@@ -427,7 +396,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.home_page.play_entrance)
 
     def open_album(self, album: Album) -> None:
-        self._ensure_local_mode()
         self._push_current()
         self.search_panel.hide()
         self.album_page.set_album(album)
@@ -439,7 +407,6 @@ class MainWindow(QMainWindow):
 
     def open_artist(self, artist: Artist) -> None:
         """Страница исполнителя: фото, имя, жанр, дискография."""
-        self._ensure_local_mode()
         self._push_current()
         self.search_panel.hide()
         self.artist_page.set_artist(artist)
@@ -482,7 +449,6 @@ class MainWindow(QMainWindow):
 
     def open_list(self, mode: str) -> None:
         """Полный список «Смотреть все»: recent / albums / artists."""
-        self._ensure_local_mode()
         self._push_current()
         self.search_panel.hide()
         self.list_page.show_mode(mode)
@@ -494,16 +460,12 @@ class MainWindow(QMainWindow):
 
     # --- Мастер создания альбома (полнооконный оверлей) ---
     def open_create_choice(self) -> None:
-        """«+» → окно выбора: создать вручную или по ссылке Deezer.
-
-        Создание альбома — локальное действие: облачный режим заранее
-        переключается на «Локально», чтобы после мастера пользователь
-        не оказался перед заглушкой.
-        """
-        self._ensure_local_mode()
+        """Открыть выбор создания альбома вручную или по ссылке."""
         self.search_panel.hide()
         if self._choice_overlay is None:
-            self._choice_overlay = CreateChoiceOverlay(self)
+            catalog = MusicCatalog(self._cloud_upload.catalog_session, self)
+            self._choice_overlay = CreateChoiceOverlay(self, catalog=catalog)
+            self._choice_overlay.cloud_sign_in_requested.connect(self._cloud_upload.open_sign_in)
             self._choice_overlay.manual_requested.connect(
                 self.open_create_album
             )
@@ -589,7 +551,9 @@ class MainWindow(QMainWindow):
         if self._rate_overlay is None:
             self._rate_overlay = RateAlbumOverlay(self)
             self._rate_overlay.album_rated.connect(self._on_album_rated)
+        self._rate_overlay.set_cloud_members(self._cloud_upload.members())
         self._rate_overlay.open_for(album)
+        self._cloud_upload.poll()
 
     def _on_album_rated(self, album: Album) -> None:
         """Оценки сохранены: обновить главную и страницу альбома."""
@@ -631,13 +595,12 @@ class MainWindow(QMainWindow):
 
         Локальное наполнение сменилось целиком: старые объекты Album
         недействительны (стек навигации очищается — возврат «по шагам»
-        к ним не имеет смысла), показывается главная в режиме
-        «Локально». Страницы альбома/исполнителя перечитываются при
+        к ним не имеет смысла), показывается главная. Страницы альбома/исполнителя перечитываются при
         каждом открытии, поэтому отдельно их обновлять не нужно.
         """
-        self._ensure_local_mode()
         self._nav_stack.clear()
         self._show_home()
+        self._cloud_upload.poll()
 
     def _on_account_deleted(self) -> None:
         """Аккаунт удалён: его оценки убраны — обновить экраны."""
@@ -659,10 +622,7 @@ class MainWindow(QMainWindow):
         Сразу (не дожидаясь следующего запуска) запускается фоновая
         дозагрузка ФОТО новых исполнителей, затем появляется окно
         «Вы успешно создали альбом, хотите оценить его сейчас?».
-        Создание могло начаться и из облачного режима — показывать
-        главную надо в «Локально».
         """
-        self._ensure_local_mode()
         self.home_page.refresh()
         self._start_art_backfill()
         self._offer_rate_after_create(_album)

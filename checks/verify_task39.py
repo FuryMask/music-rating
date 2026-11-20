@@ -456,14 +456,17 @@ QTest.qWait(50)
 if bar.maximum() > 0:
     check("плавная прокрутка по умолчанию включена",
           motion.smooth_scroll_enabled())
+    target = min(bar.maximum(), motion.SmoothScrollArea.WHEEL_STEP)
+    positions = []
+    record_position = positions.append
+    bar.valueChanged.connect(record_position)
     wheel(page.viewport(), 0, -120)
-    QTest.qWait(30)
+    started = page._anim.state() == motion.QAbstractAnimation.State.Running
+    arrived = wait_until(lambda: bar.value() == target)
+    bar.valueChanged.disconnect(record_position)
     check("колесо плавно прокручивает страницу",
-          0 < bar.value() < motion.SmoothScrollArea.WHEEL_STEP
-          and page._anim.state() == motion.QAbstractAnimation.State.Running)
-    QTest.qWait(motion.SCROLL_MAX_MS + 50)
-    check("плавная прокрутка доезжает до цели",
-          bar.value() == min(bar.maximum(), motion.SmoothScrollArea.WHEEL_STEP))
+          started and any(0 < position < target for position in positions))
+    check("плавная прокрутка доезжает до цели", arrived)
 
     os.environ["MUSICRATING_SMOOTH_SCROLL"] = "0"
     bar.setValue(0)
@@ -628,7 +631,7 @@ QTest.keyClick(win, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
 check("Ctrl+F переводит фокус в поиск", win.top_bar.search_input.hasFocus())
 check("баннер удалён", win.home_page.findChild(QPushButton, "bannerAction") is None)
 actions = [win.sidebar.btn_profile,
-           win.sidebar.btn_mode, win.sidebar.btn_add]
+           win.sidebar.btn_cloud_upload, win.sidebar.btn_add]
 check("четыре кнопки действий разнесены одинаково",
       len({right.x() - left.geometry().right() for left, right in zip(actions, actions[1:])}) == 1)
 QTest.mouseClick(win.sidebar.btn_add, Qt.MouseButton.LeftButton)

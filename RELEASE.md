@@ -38,10 +38,10 @@ $upload = Join-Path (Split-Path -Parent $source) 'music-rating-release'
 git clone https://github.com/FuryMask/music-rating.git $upload
 git -C $upload switch -c release-1.0.0
 git -C $upload rm -r -- .
-foreach ($item in @('app','packaging','checks','.gitignore','main.py','requirements.txt','README.md','RELEASE.md')) {
+foreach ($item in @('app','packaging','checks','supabase','.gitignore','main.py','requirements.txt','README.md','RELEASE.md')) {
     Copy-Item -LiteralPath (Join-Path $source $item) -Destination $upload -Recurse
 }
-git -C $upload add -- app packaging checks .gitignore main.py requirements.txt README.md RELEASE.md
+git -C $upload add -- app packaging checks supabase .gitignore main.py requirements.txt README.md RELEASE.md
 git -C $upload diff --cached --name-status
 git -C $upload commit -m 'Release Music Rating 1.0.0'
 git -C $upload push -u origin release-1.0.0
@@ -71,11 +71,59 @@ git -C $upload push -u origin release-1.0.0
 
 - База находится в `Документы\Music Rating\library.db`, обложки — в подпапке `covers`. Если Windows перенаправила «Документы» в OneDrive или в другое место, используется эта папка. Сделать архив можно через «Профиль → Настройки → Экспорт базы». Установка и обновление работают в другой папке.
 - При первом запуске с пустой базой открывается регистрация. Если профиль есть и сессия завершена, открывается вход. Активная сессия сохраняется между запусками. Профили локальные.
-- Spotify хранит введённый Client Secret в защищённом Windows DPAPI файле `spotify_credentials.json` в папке данных. Файл ключей исключён из экспорта и Git. При необходимости ключи можно передать через `MUSICRATING_SPOTIFY_CLIENT_ID` и `MUSICRATING_SPOTIFY_CLIENT_SECRET`.
-- Genius API использует ключ из защищённого Windows DPAPI файла `genius_credentials.json` в папке данных. Переменная `MUSICRATING_GENIUS_TOKEN` имеет приоритет. Без ключа приложение разбирает открытые страницы Genius. Сборка и экспорт базы не включают файл ключа.
+- Общие ключи Spotify и Genius настраиваются один раз в Supabase. Пользователю достаточно войти в облако Music Rating. [Настройка общего каталога](#общие-ключи-spotify-и-genius)
+- Для локальной работы Spotify хранит введённый Client Secret в защищённом Windows DPAPI файле `spotify_credentials.json`. Его можно переопределить через `MUSICRATING_SPOTIFY_CLIENT_ID` и `MUSICRATING_SPOTIFY_CLIENT_SECRET`.
+- Genius также принимает локальный ключ из защищённого Windows DPAPI файла `genius_credentials.json` или переменной `MUSICRATING_GENIUS_TOKEN`. Когда API недоступен, приложение разбирает открытые страницы Genius. Ключи исключены из сборки, экспорта и Git.
 
 Чтобы сохранить свой ключ локально на другом ПК или заменить его, выполни из папки исходников с установленными зависимостями. Ввод ключа скрыт.
 
 ```powershell
 & $python -c "from getpass import getpass; from app.services.genius import save_access_token; save_access_token(getpass('Genius API token: '))"
 ```
+
+## Общая библиотека в Supabase
+
+1. Открой **SQL Editor → New query** в проекте Supabase для Music Rating. Если [первая миграция](supabase/migrations/202611200001_music_rating_library.sql) ещё не выполнена, запусти её. Затем отдельным запросом запусти [миграцию общей библиотеки](supabase/migrations/202611200002_music_rating_shared.sql).
+2. В **Authentication → Sign In / Providers** оставь включённым вход по почте. Для регистрации с кодом подключи [свой SMTP-сервер](https://supabase.com/docs/guides/auth/auth-smtp) и сохрани [шаблон с кодом](#подтверждение-почты-кодом).
+3. Когда участники подтвердят свои облачные аккаунты, скопируй их **UID** из **Authentication → Users**. В **SQL Editor** выдай доступ к общей библиотеке, подставив UID и имена в запрос ниже. У каждого участника должно быть своё отображаемое имя.
+
+```sql
+insert into public.music_rating_members (user_id, display_name) values
+    ('UID_ГЕОРГИЯ', 'Георгий'),
+    ('UID_ВОЛОДИ', 'Володя'),
+    ('UID_ТРЕТЬЕГО_УЧАСТНИКА', 'Имя третьего участника')
+on conflict (user_id) do update set display_name = excluded.display_name;
+```
+
+4. На каждом ПК нажми облако слева внизу и выбери **Войти в облако**. В мастере оценивания появятся участники из списка выше. Любой из них может выставить оценку за другого. **Предосмотр** показывает записи к отправке, а **Да** публикует их в общей библиотеке.
+5. Когда справа вверху мигает **Из облака**, нажми её. Альбомы, исполнители, оценки и изображения добавятся в локальную базу. Правки, которые ещё не были отправлены, сохранятся. Если один и тот же участник переоценил альбом, следующая отправка обновит его столбец.
+
+Прежние приватные выгрузки доступны их владельцам через **Из облака**. Чтобы поделиться ими с остальными участниками, после восстановления отправь нужные локальные данные через облако слева внизу. Без сети уже скачанная библиотека доступна в SQLite.
+
+## Общие ключи Spotify и Genius
+
+1. Убедись, что [общая библиотека](#общая-библиотека-в-supabase) настроена и UID пользователей добавлены в `music_rating_members`. Сервер проверяет доступ к общей библиотеке при каждом запросе каталога.
+2. В Supabase открой **Edge Functions → Secrets** и добавь три значения. [Документация Supabase Secrets](https://supabase.com/docs/guides/functions/secrets)
+
+| Имя | Значение |
+| --- | --- |
+| `SPOTIFY_CLIENT_ID` | Client ID из Spotify Developer Dashboard |
+| `SPOTIFY_CLIENT_SECRET` | Client Secret того же приложения Spotify |
+| `GENIUS_ACCESS_TOKEN` | Client Access Token из Genius API Clients |
+
+3. Открой **Edge Functions → Deploy a new function → Via Editor**. Назови функцию `music-catalog`, замени содержимое `index.ts` на [код функции](supabase/functions/music-catalog/index.ts) и нажми **Deploy Function**. Оставь проверку JWT включённой. [Публикация функции через Dashboard](https://supabase.com/docs/guides/functions/quickstart-dashboard)
+4. Проверь импорт ссылок Spotify и Genius из свежей сборки после входа в облако Music Rating. Для Spotify в Development Mode владельцу приложения требуется активная подписка Premium. [Правила Spotify Development Mode](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)
+
+При наличии собственных ключей приложение использует их для локальных запросов. Значения общих ключей можно менять в Supabase без пересборки `.exe`.
+
+## Подтверждение почты кодом
+
+В панели Supabase редактор шаблонов становится доступен после подключения Custom SMTP. В [Email Templates](https://supabase.com/dashboard/project/_/auth/templates) открой **Confirm sign up → Body → Source** и вставь этот HTML.
+
+```html
+<h2>Подтверждение почты Music Rating</h2>
+<p>Введите код в окне Music Rating.</p>
+<p><strong>{{ .Token }}</strong></p>
+```
+
+Если аккаунт уже создан, введи почту и пароль и нажми **«Войти»**. При неподтверждённой почте откроется форма кода. Нажми **«Выслать новый код»**, введи код из свежего письма и нажми **«Подтвердить»**. Загрузка начнётся после нажатия **«Да»**. [Шаблоны писем Supabase](https://supabase.com/docs/guides/auth/auth-email-templates)
