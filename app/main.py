@@ -6,7 +6,6 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
-from app.store import STORE
 from app.theme import apply_theme
 from app.ui import MainWindow
 from app.version import VERSION
@@ -23,9 +22,7 @@ def main() -> int:
     window = MainWindow()
     window.showMaximized()  # развёрнутое окно (не полноэкранный режим)
     window.updates.start()
-    window._cloud_upload.start_monitoring()
-    if STORE.current_user is None:
-        QTimer.singleShot(0, window.open_profile)
+    QTimer.singleShot(0, window.start_cloud)
 
     return app.exec()
 

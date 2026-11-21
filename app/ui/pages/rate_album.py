@@ -3,7 +3,7 @@
 Открывается со страницы альбома (кнопка «Оценить?») или из окна
 «Вы успешно создали альбом, хотите оценить его сейчас?» после
 создания. Шаги:
-  1. УЧАСТНИКИ — выбор оценивающих (STORE.raters — это
+  1. УЧАСТНИКИ — выбор оценивающих из облачной библиотеки (это
      ЗАРЕГИСТРИРОВАННЫЕ АККАНТЫ, см. dialogs/profile_dialog.py;
      плитки пересобираются при каждом открытии). Хотя бы один —
      он получит свой столбец на шаге 2. Плитки при выборе плавно
@@ -276,8 +276,7 @@ class RateAlbumOverlay(QWidget):
                 widget.deleteLater()
         self.rater_buttons = {}
         holder = self.raters_flow.parentWidget()
-        self._rater_options = self._cloud_members or {name: name for name in STORE.raters}
-        self._options_are_cloud = bool(self._cloud_members)
+        self._rater_options = self._cloud_members
         self._selected.intersection_update(self._rater_options)
         for key, name in self._rater_options.items():
             btn = RaterChip(name, holder)
@@ -291,13 +290,10 @@ class RateAlbumOverlay(QWidget):
         if self.rater_buttons:
             self.lbl_raters_hint.setText(
                 "Выберите участников — каждый получит свой столбец оценок."
-                if self._cloud_members else
-                "Показаны локальные профили. Для списка из Supabase войдите в облако."
             )
         else:
             self.lbl_raters_hint.setText(
-                "Участники — это аккаунты. Создайте их через кнопку "
-                "профиля (левее «+») — имена появятся здесь."
+                "Для оценивания войдите в Music Rating под аккаунтом с доступом к общей библиотеке."
             )
 
     def _on_rater_toggled(self, name: str, checked: bool) -> None:
@@ -359,7 +355,7 @@ class RateAlbumOverlay(QWidget):
         # сохраняем (вернулись «Назад» поправить клетки и вернулись)
         if set(self._rater_keys) != self._selected:
             previous = {key: i for i, key in enumerate(self._rater_keys)}
-            saved = self._album.ratings if self._options_are_cloud else None
+            saved = self._album.ratings
             saved_keys = {saved.rater_id(i) or name.casefold(): i for i, name in enumerate(saved.rater_names)} if saved else {}
             keys = [key for key in self._rater_options if key in self._selected]
             names = [self._rater_options[key] for key in keys]
@@ -372,7 +368,7 @@ class RateAlbumOverlay(QWidget):
             ]
             self._raters = names
             self._rater_keys = keys
-            self._rater_ids = keys if self._options_are_cloud else [None] * len(keys)
+            self._rater_ids = keys
 
         # Чистим прошлую сборку
         while self.grid_v.count():

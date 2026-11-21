@@ -95,8 +95,6 @@ def check(name: str, cond: bool) -> None:
 
 
 # --- Данные --------------------------------------------------------------
-STORE.register_user("Георгий", "1")
-STORE.set_current_user(STORE.find_user("Георгий"))
 
 TMP = APP / "_t29_tmp"
 TMP.mkdir(exist_ok=True)

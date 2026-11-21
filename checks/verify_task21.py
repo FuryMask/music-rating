@@ -98,12 +98,9 @@ def wait_overlay(ov) -> None:
 # ============================================================
 # ФАЗА 1. Магазин: новая статистика
 # ============================================================
-print("== ФАЗА 1: store — статистика, переименование, пароль ==")
+print("== ФАЗА 1: статистика оценок ==")
 
-u_t = STORE.register_user("Тестер", "pass1")[0]
-u_v = STORE.register_user("Второй", "pass2")[0]
-check("регистрация Тестер", u_t is not None)
-check("регистрация Второй", u_v is not None)
+TESTER_ID, OTHER_ID = "tester-uid", "other-uid"
 
 STORE.add_artist("Икс")
 STORE.add_artist("Игрек")
@@ -144,7 +141,7 @@ check("альбомы созданы", all(
 ))
 
 # Пустая статистика
-stats0 = STORE.user_stats(u_t)
+stats0 = STORE.user_stats(TESTER_ID, "Тестер")
 check("stats0: count 0", stats0.rated_count == 0)
 check("stats0: favorite_rating None", stats0.favorite_rating is None)
 check("stats0: least album None", stats0.least_favorite_album is None)
@@ -153,7 +150,7 @@ check("stats0: least artist None", stats0.least_favorite_artist is None)
 # А: 8.0, 8.0 → любимая 8.0; Б: 9.0, 5.0
 STORE.rate_album(album_a, ["Тестер"], [[8.0], [8.0]])
 STORE.rate_album(album_b, ["Тестер"], [[9.0], [5.0]])
-s = STORE.user_stats(u_t)
+s = STORE.user_stats(TESTER_ID, "Тестер")
 check("count=2", s.rated_count == 2)
 check("любимый альбом А 8.0", s.favorite_album == ("Альбом А", 8.0))
 check("нелюбимый альбом Б 7.0", s.least_favorite_album == ("Альбом Б", 7.0))
@@ -164,12 +161,12 @@ check("нелюбимый исполнитель Зет 5.0",
 
 # В: 6.0 → ничья с 5.0/9.0 не влияет; Г: 9.0 → ничья 2-2 с 8.0 → выше (9.0)
 STORE.rate_album(album_c, ["Тестер"], [[6.0]])
-s = STORE.user_stats(u_t)
+s = STORE.user_stats(TESTER_ID, "Тестер")
 check("любимая оценка всё ещё 8.0", s.favorite_rating == 8.0)
 check("нелюбимый альбом теперь В 6.0",
       s.least_favorite_album == ("Альбом В", 6.0))
 STORE.rate_album(album_d, ["Тестер"], [[9.0]])
-s = STORE.user_stats(u_t)
+s = STORE.user_stats(TESTER_ID, "Тестер")
 check("ничья частоты → бо́льшая оценка 9.0", s.favorite_rating == 9.0)
 check("любимый альбом теперь Г 9.0", s.favorite_album == ("Альбом Г", 9.0))
 check("нелюбимый альбом всё ещё В 6.0",
@@ -177,373 +174,32 @@ check("нелюбимый альбом всё ещё В 6.0",
 
 # Д: 11.0 + 10.0 → арифметика 10.5, кап 10.0
 STORE.rate_album(album_e, ["Тестер"], [[11.0], [10.0]])
-s = STORE.user_stats(u_t)
+s = STORE.user_stats(TESTER_ID, "Тестер")
 check("кап: любимый альбом Д 10.0", s.favorite_album == ("Альбом Д", 10.0))
 check("count=5", s.rated_count == 5)
 
 # ============================================================
-# ФАЗА 2. Переименование аккаунта
-# ============================================================
-print("== ФАЗА 2: rename_user ==")
-
-check("rename: пустое имя", STORE.rename_user(u_t, "   ") == "Введите новое имя")
-check("rename: занятое имя (регистр)",
-      STORE.rename_user(u_t, "ВТОРОЙ") == "Такой логин уже занят")
-check("rename: то же имя — ошибка",
-      STORE.rename_user(u_t, "Тестер") == "Это уже ваше текущее имя")
-
-old_id = u_t.id
-STORE.set_current_user(u_t)  # логиним именно Тестера для проверки сессии
-err = STORE.rename_user(u_t, "Тестер Шесть")
-check("rename: успех", err is None)
-check("rename: имя сменилось", u_t.username == "Тестер Шесть")
-check("rename: сессия жива (по id)",
-      STORE.current_user is not None and STORE.current_user.id == old_id)
-check("rename: STORE.raters обновлён",
-      "Тестер Шесть" in STORE.raters and "Тестер" not in STORE.raters)
-check("rename: состав альбома А обновлён",
-      album_a.ratings.rater_names == ["Тестер Шесть"])
-check("rename: оценки не потерялись",
-      album_a.ratings.values == [[8.0], [8.0]])
-check("rename: статистика на месте",
-      STORE.user_stats(u_t).rated_count == 5)
-check("rename: смена только регистра допустима",
-      STORE.rename_user(u_t, "тестер шесть") is None)
-
-# Переживает перезапуск хранилища
-store2 = MusicStore()
-u2 = store2.find_user("тестер шесть")
-check("rename: персистентность", u2 is not None)
-a2 = next(a for a in store2.albums if a.title == "Альбом А")
-check("rename: в базе состав обновлён", a2.ratings.rater_names == ["тестер шесть"])
-check("rename: в базе оценки целы", a2.ratings.values == [[8.0], [8.0]])
-user, err = store2.authenticate("ТЕСТЕР ШЕСТЬ", "pass1")
-check("rename: вход под новым именем", user is not None and err is None)
-
-# ============================================================
-# ФАЗА 3. Смена пароля без текущего
-# ============================================================
-print("== ФАЗА 3: change_password(user, new) ==")
-
-u_t2 = store2.find_user("тестер шесть")
-check("пароль: пустой отклонён",
-      store2.change_password(u_t2, "") == "Новый пароль не может быть пустым")
-check("пароль: смена без текущего — успех",
-      store2.change_password(u_t2, "brand new") is None)
-check("пароль: старый больше не подходит",
-      store2.authenticate("тестер шесть", "pass1")[0] is None)
-check("пароль: новый работает",
-      store2.authenticate("тестер шесть", "brand new")[0] is not None)
-check("пароль: тот же пароль — ошибка",
-      store2.change_password(u_t2, "brand new")
-      == "Новый пароль совпадает с текущим")
-
-# ============================================================
-# ФАЗА 4. Окно профиля (UI)
-# ============================================================
-print("== ФАЗА 4: окно профиля ==")
-
-STORE.logout()
 win = MainWindow()
 win.resize(1280, 800)
 win.show()
-QTest.qWait(250)
+win._cloud_upload._set_members({OTHER_ID: "Второй", TESTER_ID: "Тестер"})
 
-# Оповещения — тосты (Task 31): помощники чтения последнего тоста
-def last_toast():
-    active = win.toasts.active
-    return active[0] if active else None
-
-def toasts_clear():
-    win.toasts.clear()
-    QTest.qWait(50)
-
-win.open_profile()
-ov = win._profile_overlay
-check("оверлей создан", ov is not None)
-wait_overlay(ov)
-check("открыт: страница входа",
-      ov.pages.currentIndex() == 0 and ov.isVisible())
-
-# Регистрация через UI
-ov.lbl_login_link.linkActivated.emit("register")
-QTest.qWait(50)
-check("ссылка → регистрация", ov.pages.currentIndex() == 1)
-ov.in_reg_login.setText("Юзер Юзеров")
-ov.in_reg_password.setText("qwerty")
-ov.in_reg_password2.setText("qwerty")
-ov.btn_register.click()
-QTest.qWait(50)
-check("регистрация → профиль", ov.pages.currentIndex() == 2)
-check("сессия: Юзер Юзеров", STORE.current_user.username == "Юзер Юзеров")
-
-# 1) Ряд вкладок: названия и ✕-кнопка в самом конце
-names = [b.text() for b in ov.tab_buttons]
-check("вкладки: Главная/Данные/Настройки/Статистика",
-      names == ["Главная", "Данные", "Настройки", "Статистика"])
-check("вкладки: «Об аккаунте» исчезла", "Об аккаунте" not in names)
-cb = ov.btn_close_menu
-st = ov.tab_buttons[3]  # последняя вкладка — «Статистика»
-check("✕: размер 28×28",
-      cb.width() == 28 and cb.height() == 28)
-check("✕: в конце ряда (правее «Статистики»)",
-      cb.x() > st.x() + st.width())
-check("✕: на уровне вкладок", abs(cb.y() - st.y()) <= 6)
-check("✕: тултип", cb.toolTip() == "Вернуться в меню")
-
-# 3) «Главная»: без оценок строки «Оценок пока нет» нет вовсе
-check("Главная: имя", ov.lbl_name.text() == "Юзер Юзеров")
-check("Главная: строки даты нет (скрыта)", not ov.lbl_last_rated.isVisible())
-check("Главная: нет текста про отсутствие оценок",
-      "Оценок" not in ov.lbl_last_rated.text())
-check("Главная: «В приложении с …» есть",
-      ov.lbl_member.text().startswith("В приложении с"))
-
-# 1) ✕ возвращает в меню
-cb.click()
-QTest.qWait(50)
-check("✕: окно закрылось", not ov.isVisible())
-check("✕: главное окно снова видно", win.isVisible())
-
-# 2) Повторное открытие — сессия жива, вкладка «Данные»
-win.open_profile()
-wait_overlay(ov)
-check("повторное открытие: профиль (был залогинен)",
-      ov.pages.currentIndex() == 2)
-check("стек: 3 страницы (страницы пароля нет)", ov.pages.count() == 3)
-check("атрибут btn_change_password удалён",
-      not hasattr(ov, "btn_change_password"))
-check("атрибуты страницы пароля удалены",
-      not hasattr(ov, "in_old_password")
-      and not hasattr(ov, "lbl_password_error"))
-
-ov.tab_buttons[1].click()
-QTest.qWait(30)
-check("вкладка «Данные» открыта", ov.tab_content.currentIndex() == 1)
-
-# 4) Поля пароля + галочка СПРАВА от подтверждения
-check("поля пароля: echo Password",
-      ov.in_new_password.echoMode() == QLineEdit.EchoMode.Password
-      and ov.in_new_password2.echoMode() == QLineEdit.EchoMode.Password)
-check("плейсхолдеры полей пароля",
-      ov.in_new_password.placeholderText() == "Новый пароль"
-      and ov.in_new_password2.placeholderText() == "Подтвердите пароль")
-bp = ov.btn_apply_password
-f2 = ov.in_new_password2
-check("галочка пароля: 28×28", bp.width() == 28 and bp.height() == 28)
-check("галочка пароля: СПРАВА от подтверждения",
-      bp.x() > f2.x() + f2.width() - 2 and abs(bp.y() - f2.y()) <= 8)
-
-# 5) Поле имени + галочка
-check("поле имени заполнено текущим именем",
-      ov.in_name.text() == "Юзер Юзеров")
-bn = ov.btn_apply_name
-fn = ov.in_name
-check("галочка имени: 28×28", bn.width() == 28 and bn.height() == 28)
-check("галочка имени: СПРАВА от поля",
-      bn.x() > fn.x() + fn.width() - 2 and abs(bn.y() - fn.y()) <= 8)
-
-# 6) «Удалить аккаунт» компактная
-bd = ov.btn_delete_account
-check("удалить: objectName dangerSmallButton",
-      bd.objectName() == "dangerSmallButton")
-check("удалить: компактная (не на всю ширину)",
-      bd.width() < ov.tab_content.width() // 2)
-check("удалить: невысокая", bd.height() <= 34)
-check("удалить: слева", bd.x() <= 24)
-
-# 2) «Выйти из аккаунта» — внутри вкладки «Настройки»
-bl = ov.btn_logout
-check("выйти: текст", bl.text() == "Выйти из аккаунта")
-check("выйти: во вкладке (родитель — вкладка)",
-      bl.parent() is not None and bl.parent().parent() is ov.tab_content)
-center = (ov.tab_content.width() - bl.width()) / 2
-check("выйти: по центру вкладки", abs(bl.x() - center) <= 8)
-
-# 4) Смена пароля через UI (оповещения — всплывающие тосты, Task 31)
-toasts_clear()
-bp.click()
-QTest.qWait(30)
-t = last_toast()
-check("пароль: пустые поля → ошибка (тост)",
-      t is not None and t.text == "Введите новый пароль"
-      and t.kind == "error")
-QTest.keyClicks(ov.in_new_password, "abc")
-QTest.keyClicks(ov.in_new_password2, "xyz")
-toasts_clear()
-bp.click()
-QTest.qWait(30)
-t = last_toast()
-check("пароль: не совпадают → ошибка (тост)",
-      t is not None and t.text == "Пароли не совпадают"
-      and t.kind == "error")
-
-ov.in_new_password.clear()
-ov.in_new_password2.clear()
-QTest.keyClicks(ov.in_new_password, "n12345")
-QTest.keyClicks(ov.in_new_password2, "n12345")
-toasts_clear()
-bp.click()
-QTest.qWait(30)
-t = last_toast()
-check("пароль: успех — тост", t is not None
-      and t.text == "Пароль изменён" and t.kind == "success")
-check("пароль: поля очищены", ov.in_new_password.text() == ""
-      and ov.in_new_password2.text() == "")
-check("пароль: новый работает в хранилище",
-      STORE.authenticate("Юзер Юзеров", "n12345")[0] is not None)
-
-# 5) Переименование через UI
-toasts_clear()
-ov.in_name.setText("Юзер Изменён")
-bn.click()
-QTest.qWait(30)
-t = last_toast()
-check("имя: тост «Имя изменено»", t is not None
-      and t.text == "Имя изменено" and t.kind == "success")
-check("имя: лейбл на «Главной» обновился",
-      ov.lbl_name.text() == "Юзер Изменён")
-check("имя: поле перезаполнено", ov.in_name.text() == "Юзер Изменён")
-check("имя: STORE.raters обновлён",
-      "Юзер Изменён" in STORE.raters and "Юзер Юзеров" not in STORE.raters)
-check("имя: сессия жива", STORE.current_user.username == "Юзер Изменён")
-
-ov.in_name.setText("Тестер Шесть")
-toasts_clear()
-bn.click()
-QTest.qWait(30)
-t = last_toast()
-check("имя: дубль → ошибка (тост)",
-      t is not None and t.text == "Такой логин уже занят"
-      and t.kind == "error")
-ov.in_name.clear()
-toasts_clear()
-bn.click()
-QTest.qWait(30)
-t = last_toast()
-check("имя: пустое → ошибка (тост)",
-      t is not None and t.text == "Введите новое имя")
-
-# 7) Статистика: пустая — прочерки
-ov.tab_buttons[3].click()
-QTest.qWait(30)
-check("статистика: count 0",
-      ov.lbl_stat_count.text() == "Оценено альбомов: 0")
-check("статистика: любимый альбом — прочерк",
-      ov.lbl_stat_album.text() == "Любимый альбом: —")
-check("статистика: любимый исполнитель — прочерк",
-      ov.lbl_stat_artist.text() == "Любимый исполнитель: —")
-check("статистика: любимая оценка — прочерк",
-      ov.lbl_stat_rating.text() == "Любимая оценка: —")
-check("статистика: нелюбимый альбом — прочерк",
-      ov.lbl_stat_worst_album.text() == "Самый нелюбимый альбом: —")
-check("статистика: нелюбимый исполнитель — прочерк",
-      ov.lbl_stat_worst_artist.text() == "Самый нелюбимый исполнитель: —")
-
-# Оценки «Юзеру Изменён» → статистика и дата на «Главной»
-STORE.rate_album(album_a, ["тестер шесть", "Юзер Изменён"],
-                 [[8.0, 9.0], [7.0, None]])
-ov._refresh_profile()
-QTest.qWait(30)
-s = STORE.user_stats(STORE.current_user)
-check("статистика: count 1", s.rated_count == 1)
-check("статистика: любимая оценка 9.0", s.favorite_rating == 9.0)
-check("статистика: лейбл любимой оценки",
-      ov.lbl_stat_rating.text() == "Любимая оценка: 9.0")
-check("статистика: лейбл нелюбимого альбома",
-      ov.lbl_stat_worst_album.text()
-      == "Самый нелюбимый альбом: «Альбом А» — 9.0")
-check("статистика: лейбл нелюбимого исполнителя",
-      ov.lbl_stat_worst_artist.text()
-      == "Самый нелюбимый исполнитель: Икс — 9.0")
-
-ov.tab_buttons[0].click()
-QTest.qWait(30)
-check("Главная: дата последней оценки ПОЯВИЛАСЬ",
-      ov.lbl_last_rated.isVisible()
-      and ov.lbl_last_rated.text().startswith("Последняя оценка: "))
-
-# Esc-каскад: подтверждение → окно
-QTest.keyClick(win, Qt.Key.Key_Escape)
-QTest.qWait(30)
-check("Esc закрыл окно профиля", not ov.isVisible())
-
-# ============================================================
-# ФАЗА 5. Удаление аккаунта + пересчёт средних
-# ============================================================
-print("== ФАЗА 5: удаление аккаунта ==")
-
-win.open_profile()
-wait_overlay(ov)
-check("повторное открытие: сессия жива", ov.pages.currentIndex() == 2)
-ov.tab_buttons[1].click()
-QTest.qWait(30)
-ov.btn_delete_account.click()
-QTest.qWait(250)
-cf = ov._confirm
-title_lbl = next(l for l in cf.findChildren(QLabel)
-                 if l.objectName() == "dangerTitle")
-check("подтверждение открылось", cf is not None and cf.isVisible())
-check("подтверждение: заголовок", title_lbl.text() == "Удалить аккаунт?")
-cf.btn_stay.click()
-QTest.qWait(50)
-check("«Отмена» — остались в аккаунте", STORE.current_user is not None
-      and "Юзер Изменён" in STORE.raters)
-ov.btn_delete_account.click()
-QTest.qWait(250)
-cf = ov._confirm
-cf.btn_exit.click()
-QTest.qWait(80)
-check("«Удалить»: окно профиля закрылось", not ov.isVisible())
-check("«Удалить»: сессия сброшена", STORE.current_user is None)
-check("«Удалить»: аккаунт исчез из участников",
-      "Юзер Изменён" not in STORE.raters)
-check("«Удалить»: матрица альбома пересчитана",
-      album_a.ratings.rater_names == ["тестер шесть"]
-      and album_a.ratings.values == [[8.0], [7.0]])
-check("«Удалить»: средняя альбома 7.5", album_a.rating == 7.5)
-
-win.open_profile()
-wait_overlay(ov)
-check("после удаления: окно входа", ov.pages.currentIndex() == 0)
-ov.close_overlay()
-QTest.qWait(30)
-
-# Esc в подтверждении сначала закрывает подтверждение
-STORE.authenticate("Второй", "pass2")
-win.open_profile()
-wait_overlay(ov)
-ov.tab_buttons[1].click()
-QTest.qWait(30)
-ov.btn_delete_account.click()
-QTest.qWait(250)
-check("подтверждение открылось перед Esc", ov._confirm.isVisible())
-QTest.keyClick(win, Qt.Key.Key_Escape)
-QTest.qWait(50)
-check("Esc при подтверждении: подтверждение закрыто, профиль жив",
-      (not ov._confirm.isVisible()) and ov.isVisible())
-QTest.keyClick(win, Qt.Key.Key_Escape)
-QTest.qWait(30)
-check("Esc ещё раз: окно закрылось", not ov.isVisible())
-STORE.logout()
-
-# ============================================================
 # ФАЗА 6. Регрессия: мастер оценивания и страница альбома
 # ============================================================
 print("== ФАЗА 6: регрессия мастера и страницы альбома ==")
 
-# Плитки участников = актуальные аккаунты (после переименований/удалений)
+# Плитки участников соответствуют таблице облачных профилей.
 win.open_rate_album(album_b)
 ro = win._rate_overlay
 wait_overlay(ro)
 chips = list(ro.rater_buttons.keys())
-check("плитки = [Второй, тестер шесть]",
-      sorted(chips) == ["Второй", "тестер шесть"])
+check("плитки соответствуют участникам Supabase",
+      set(chips) == {OTHER_ID, TESTER_ID})
 check("заглушек-участников нет",
       not any(c in chips for c in ("Кирилл", "Володя", "Георгий")))
 
 # Валидатор и секретная 11 (регрессия Task 19)
-chips_widgets = [ro.rater_buttons[name] for name in ("Второй", "тестер шесть")]
+chips_widgets = [ro.rater_buttons[uid] for uid in (OTHER_ID, TESTER_ID)]
 chips_widgets[0].click()
 chips_widgets[1].click()
 ro.btn_next.click()  # шаг 2
@@ -608,15 +264,12 @@ check("источник: ручной альбом — «Создано вруч
 
 # Перезапуск хранилища после всех операций — сессия и данные целы
 store3 = MusicStore()
-check("финал: участники = [Второй, тестер шесть]",
-      sorted(u.username for u in store3.users)
-      == ["Второй", "тестер шесть"])
 a3 = next(a for a in store3.albums if a.title == "Альбом А")
 check("финал: матрица А в базе",
-      a3.ratings.rater_names == ["тестер шесть"]
-      and a3.ratings.values == [[8.0], [7.0]])
+      a3.ratings.rater_names == ["Тестер"]
+      and a3.ratings.values == [[8.0], [8.0]])
 check("финал: статистика по новому имени работает",
-      store3.user_stats(store3.find_user("тестер шесть")).rated_count == 5)
+      store3.user_stats(TESTER_ID, "Тестер").rated_count == 5)
 
 # ============================================================
 print()

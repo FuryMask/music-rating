@@ -1,24 +1,13 @@
 """Хранилище данных приложения — SQL (SQLite).
 
 База — SQLite-файл Music Rating/library.db в папке «Документы».
-Схема реляционная, SQL стандартный (плейсхолдеры
-«?») — при переезде на облачное SQL-хранилище заменить нужно будет
-только подключение в этом файле, интерфейс MusicStore не меняется:
-
     artists       — исполнители (имя — ключ, порядок хранения = position)
     albums        — альбомы (id, оценка, даты, source_id ссылки Deezer)
     album_artists — исполнители альбома (список artist_names по порядку)
     album_tracks  — треки альбома (по порядку)
     track_artists — исполнители каждого трека (по порядку)
-    users         — аккаунты (система профилей): вход, участники оценивания
     album_raters  — участники конкретного альбома (столбцы оценок)
     track_ratings — оценки треков участниками [трек][участник]
-
-ПРОФИЛИ: участники оценивания (плитки на шаге 1 мастера) — это
-ЗАРЕГИСТРИРОВАННЫЕ АККАНТЫ (таблица users); прежние заглушки
-(«Кирилл», «Володя»…) больше не создаются. Пароли хранятся только
-в виде PBKDF2-хэшей с индивидуальной солью. Текущий пользователь
-(сессия) переживает перезапуск приложения — хранится в meta.
 
 Порядок строк хранится в колонке position: «новые — раньше» в списках
 и дискографиях строится по порядку вставки, как раньше. Каждое
@@ -42,11 +31,9 @@ artist_albums/artist_main_genre (дискография и основной жа
 Новая библиотека изначально пуста.
 """
 
-import hashlib
 import json
 import os
 import random
-import secrets
 import shutil
 import sqlite3
 import tempfile
@@ -64,7 +51,6 @@ from app.models import (
     Artist,
     ArtistDraft,
     TrackDraft,
-    User,
     UserStats,
 )
 
@@ -85,10 +71,7 @@ LIBRARY_FILE = DATA_DIR / "library.json"  # прежний формат (для 
 EXPORT_DB_ENTRY = "library.db"
 EXPORT_COVERS_PREFIX = "covers/"
 # Обязательные таблицы базы Music Rating (проверка при импорте)
-REQUIRED_TABLES = {"meta", "artists", "albums", "users", "album_tracks"}
-
-# Число итераций PBKDF2 для хэшей паролей (компромисс скорость/надёжность)
-PBKDF2_ITERATIONS = 120_000
+REQUIRED_TABLES = {"meta", "artists", "albums", "album_tracks"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -141,22 +124,6 @@ CREATE TABLE IF NOT EXISTS track_artists (
     PRIMARY KEY (album_id, track_position, position)
 );
 
-CREATE TABLE IF NOT EXISTS raters (
-    position INTEGER NOT NULL,
-    name     TEXT NOT NULL,
-    PRIMARY KEY (position)
-);
-
-CREATE TABLE IF NOT EXISTS users (
-    position      INTEGER NOT NULL,
-    id            TEXT PRIMARY KEY,
-    username      TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    password_salt TEXT NOT NULL,
-    created_at    TEXT NOT NULL DEFAULT '',
-    last_rated_at TEXT
-);
-
 CREATE TABLE IF NOT EXISTS album_raters (
     album_id TEXT NOT NULL,
     position INTEGER NOT NULL,
@@ -181,8 +148,6 @@ class MusicStore:
     def __init__(self) -> None:
         self.artists: list[Artist] = []
         self.albums: list[Album] = []
-        self.users: list[User] = []    # аккаунты (= участники оценивания)
-        self._current_user_id: str | None = None
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(DB_FILE)
         self._ensure_schema()
@@ -193,14 +158,7 @@ class MusicStore:
             self._meta_set("seeded", "1")
 
     def _ensure_schema(self) -> None:
-        """Схема и миграции старых баз (используется и при импорте).
-
-        CREATE TABLE IF NOT EXISTS idempotentен; колонка avatar_path
-        появилась позже остальных — старые базы дополняются через
-        ALTER TABLE. Таблица raters больше не используется (участники —
-        аккаунты): в старых базах в ней могли остаться заглушки —
-        очищаем.
-        """
+        """Дополнить старую базу и удалить локальные учётные записи."""
         self._conn.executescript(SCHEMA)
         cols = {
             row[1] for row in self._conn.execute(
@@ -219,9 +177,21 @@ class MusicStore:
             if column not in {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         self._conn.commit()
-        if self._conn.execute("SELECT 1 FROM raters LIMIT 1").fetchone() is not None:
-            self._conn.execute("DELETE FROM raters")
-            self._conn.commit()
+        # Keep only the old settings key for migrating an encrypted cloud session.
+        if self._conn.execute("SELECT 1 FROM sqlite_master WHERE name IN ('users', 'raters')").fetchone():
+            secure_delete = self._conn.execute("PRAGMA secure_delete").fetchone()[0]
+            self._conn.execute("PRAGMA secure_delete = ON")
+            try:
+                with self._conn:
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO meta (key, value) "
+                        "SELECT 'legacy_cloud_profile', value FROM meta WHERE key = 'current_user_id'"
+                    )
+                    self._conn.execute("DELETE FROM meta WHERE key = 'current_user_id'")
+                    self._conn.execute("DROP TABLE IF EXISTS users")
+                    self._conn.execute("DROP TABLE IF EXISTS raters")
+            finally:
+                self._conn.execute(f"PRAGMA secure_delete = {secure_delete}")
 
     # --- Мета (служебные флаги инициализации) -----------------------------
     def _meta_get(self, key: str) -> str | None:
@@ -238,9 +208,8 @@ class MusicStore:
         )
         self._conn.commit()
 
-    def _meta_delete(self, key: str) -> None:
-        self._conn.execute("DELETE FROM meta WHERE key = ?", (key,))
-        self._conn.commit()
+    def legacy_cloud_profile(self) -> str:
+        return self._meta_get("legacy_cloud_profile") or "guest"
 
     def cloud_state(self, key: str) -> str | None:
         return self._meta_get(f"cloud_sync:{key}")
@@ -264,196 +233,7 @@ class MusicStore:
             self.albums, self.artists = previous
             raise
 
-    # --- Участники оценивания (= аккаунты) ---------------------------------
-    @property
-    def raters(self) -> list[str]:
-        """Имена участников для шага 1 мастера оценивания.
-
-        Это ЗАРЕГИСТРИРОВАННЫЕ АККАНТЫ (в порядке регистрации):
-        создали профиль — имя появилось в списке участников. Прежние
-        заглушки (Кирилл, Володя и т.д.) больше не подставляются;
-        уже сохранённые оценки старых участников в альбомах не трогаются
-        (состав столбцов хранится у каждого альбома).
-        """
-        return [user.username for user in self.users]
-
-    # --- Профили: пароли и сессия ------------------------------------------
-    @staticmethod
-    def _hash_password(password: str, salt_hex: str) -> str:
-        """PBKDF2-HMAC-SHA256 пароля с солью (hex). Обратимости нет."""
-        return hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode("utf-8"),
-            bytes.fromhex(salt_hex),
-            PBKDF2_ITERATIONS,
-        ).hex()
-
-    def find_user(self, username: str) -> User | None:
-        """Аккаунт по имени (без учёта регистра)."""
-        low = username.strip().casefold()
-        for user in self.users:
-            if user.username.casefold() == low:
-                return user
-        return None
-
-    @property
-    def current_user(self) -> User | None:
-        """Залогиненный пользователь (сессия переживает перезапуск)."""
-        if self._current_user_id is None:
-            return None
-        return next(
-            (u for u in self.users if u.id == self._current_user_id),
-            None,
-        )
-
-    def set_current_user(self, user: User | None) -> None:
-        """Запомнить/сбросить сессию (meta — переживает перезапуск)."""
-        self._current_user_id = user.id if user is not None else None
-        if user is None:
-            self._meta_delete("current_user_id")
-        else:
-            self._meta_set("current_user_id", user.id)
-
-    def logout(self) -> None:
-        """Выйти из аккаунта (профиль останется в списке участников)."""
-        self.set_current_user(None)
-
-    def register_user(self, username: str, password: str,
-                      password_again: str | None = None
-                      ) -> tuple[User | None, str | None]:
-        """Регистрация аккаунта (он же — новый участник оценивания).
-
-        Возвращает (пользователь, None) при успехе и (None, текст
-        ошибки) при отказе: пустые имя/пароль, несовпадение пароля
-        с подтверждением, имя уже занято (регистр не важен).
-        """
-        name = username.strip()
-        if not name or not password:
-            return (None, "Введите логин и пароль")
-        if password_again is not None and password != password_again:
-            return (None, "Пароли не совпадают")
-        if self.find_user(name) is not None:
-            return (None, "Такой логин уже занят")
-        salt = secrets.token_bytes(16).hex()
-        user = User(
-            id=uuid.uuid4().hex,
-            username=name,
-            password_hash=self._hash_password(password, salt),
-            password_salt=salt,
-            created_at=datetime.now().isoformat(timespec="seconds"),
-        )
-        self.users.append(user)
-        self.set_current_user(user)  # сразу залогинить нового
-        self._save()
-        return (user, None)
-
-    def authenticate(self, username: str, password: str
-                     ) -> tuple[User | None, str | None]:
-        """Вход по имени и паролю; успех — сессия запомнена."""
-        user = self.find_user(username)
-        if user is None or self._hash_password(
-            password, user.password_salt
-        ) != user.password_hash:
-            return (None, "Неверный логин или пароль")
-        self.set_current_user(user)
-        return (user, None)
-
-    def change_password(self, user: User, new: str) -> str | None:
-        """Сменить пароль (окно профиля → «Настройки»).
-
-        Форма смены — два поля (новый пароль и подтверждение) БЕЗ
-        ввода текущего пароля (пользователь уже вошёл в аккаунт);
-        совпадение двух полей проверяет окно профиля. None — успех,
-        иначе текст ошибки. Пароль нельзя «сменить» на тот же, что
-        уже стоит: новый, свёртанный с текущей солью, обязан отличаться
-        от текущего хэша.
-        """
-        if not new:
-            return "Новый пароль не может быть пустым"
-        if self._hash_password(new, user.password_salt) == user.password_hash:
-            return "Новый пароль совпадает с текущим"
-        user.password_salt = secrets.token_bytes(16).hex()
-        user.password_hash = self._hash_password(new, user.password_salt)
-        self._save()
-        return None
-
-    def rename_user(self, user: User, new_username: str) -> str | None:
-        """Переименовать аккаунт (окно профиля → «Настройки»).
-
-        Имя — ключ участника оценивания: обновляется и в списке
-        аккаунтов, и в составах оценивавших УЖЕ ОЦЕНЁННЫХ альбомов
-        (столбцы оценок остаются на своих местах, оценки не теряются).
-        Сессия не сбрасывается (пользователь опознаётся по id).
-        «Сменить» имя на то же самое нельзя — возвращается ошибка
-        (смена только регистра допускается: строка другая).
-        None — успех, иначе текст ошибки.
-        """
-        name = new_username.strip()
-        if not name:
-            return "Введите новое имя"
-        if name == user.username:
-            return "Это уже ваше текущее имя"
-        existing = self.find_user(name)
-        if existing is not None and existing.id != user.id:
-            return "Такой логин уже занят"
-        old = user.username
-        user.username = name
-        for album in self.albums:
-            ratings = album.ratings
-            if ratings is None:
-                continue
-            ratings.rater_names = [
-                name if rater == old and ratings.rater_id(column) is None else rater
-                for column, rater in enumerate(ratings.rater_names)
-            ]
-        self._save()
-        return None
-
-    def delete_user(self, user: User) -> None:
-        """Удалить аккаунт и ЕГО ОЦЕНКИ из всех альбомов.
-
-        Столбец участника убирается из матриц оценок, средние
-        альбомов пересчитываются; альбом, который после этого
-        больше некому оценивать, снова «не оценён» (оценка и дата
-        сбрасываются). Имя исчезает из списка участников.
-        """
-        self.users = [u for u in self.users if u.id != user.id]
-        for album in self.albums:
-            ratings = album.ratings
-            if ratings is None:
-                continue
-            column = next((i for i, name in enumerate(ratings.rater_names)
-                           if name == user.username and ratings.rater_id(i) is None), None)
-            if column is None:
-                continue
-            new_names = [
-                name for i, name in enumerate(ratings.rater_names)
-                if i != column
-            ]
-            new_values = [
-                [v for i, v in enumerate(row) if i != column]
-                for row in ratings.values
-            ]
-            if new_names and any(
-                v is not None for row in new_values for v in row
-            ):
-                updated = AlbumRatings(
-                    rater_names=new_names,
-                    values=new_values,
-                    rated_at=ratings.rated_at,
-                    rater_ids=[ratings.rater_id(i) for i in range(len(ratings.rater_names)) if i != column],
-                )
-                album.ratings = updated
-                album.rating = updated.album_average()
-            else:
-                album.ratings = None
-                album.rating = None
-                album.rated_at = None
-        if self.current_user is user:
-            self.set_current_user(None)
-        self._save()
-
-    def user_stats(self, user: User) -> UserStats:
+    def user_stats(self, user_id: str, display_name: str) -> UserStats:
         """Статистика для вкладки «Статистика» окна профиля.
 
         rated_count — альбомы, где пользователь заполнил хоть одну
@@ -476,9 +256,14 @@ class MusicStore:
         rating_counts: dict[float, int] = {}
         for album in self.albums:
             ratings = album.ratings
-            if ratings is None or user.username not in ratings.rater_names:
+            if ratings is None:
                 continue
-            column = ratings.rater_names.index(user.username)
+            column = next((i for i in range(len(ratings.rater_names)) if ratings.rater_id(i) == user_id), None)
+            if column is None:
+                column = next((i for i, name in enumerate(ratings.rater_names)
+                               if ratings.rater_id(i) is None and name.casefold() == display_name.casefold()), None)
+            if column is None:
+                continue
             filled = [
                 row[column] for row in ratings.values
                 if column < len(row) and row[column] is not None
@@ -489,6 +274,7 @@ class MusicStore:
             average = min(AlbumRatings.AVERAGE_CAP,
                           round(sum(filled) / len(filled), 1))
             rated_at = album.rated_at or ""
+            stats.last_rated_at = max(stats.last_rated_at or "", rated_at) or None
             if (
                 best_album is None
                 or average > best_album[0]
@@ -890,13 +676,6 @@ class MusicStore:
         album.ratings = ratings
         album.rating = ratings.album_average()
         album.rated_at = ratings.rated_at
-        # Профили: момент последней оценки — каждому участнику-
-        # аккаунту, который ставил оценки в этом сеансе (вкладка
-        # «Главная» окна профиля)
-        now = ratings.rated_at
-        for user in self.users:
-            if user.username in ratings.rater_names:
-                user.last_rated_at = now
         self._save()
         return ratings
 
@@ -992,25 +771,6 @@ class MusicStore:
         album_cur = self._conn.cursor()
         track_cur = self._conn.cursor()
         rating_cur = self._conn.cursor()
-
-        self.users = [
-            User(
-                id=row[0],
-                username=row[1],
-                password_hash=row[2],
-                password_salt=row[3],
-                created_at=row[4],
-                last_rated_at=row[5],
-            )
-            for row in main_cur.execute(
-                "SELECT id, username, password_hash, password_salt, "
-                "created_at, last_rated_at FROM users ORDER BY position"
-            )
-        ]
-        current_id = self._meta_get("current_user_id")
-        self._current_user_id = current_id if any(
-            u.id == current_id for u in self.users
-        ) else None
 
         self.artists = [
             Artist(name=row[0], genre=row[1], photo_path=row[2],
@@ -1109,20 +869,8 @@ class MusicStore:
             cur.execute("DELETE FROM album_artists")
             cur.execute("DELETE FROM albums")
             cur.execute("DELETE FROM artists")
-            cur.execute("DELETE FROM users")
             cur.execute("DELETE FROM album_raters")
             cur.execute("DELETE FROM track_ratings")
-            for position, user in enumerate(self.users):
-                cur.execute(
-                    "INSERT INTO users (position, id, username, "
-                    "password_hash, password_salt, created_at, "
-                    "last_rated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        position, user.id, user.username,
-                        user.password_hash, user.password_salt,
-                        user.created_at, user.last_rated_at,
-                    ),
-                )
             for position, artist in enumerate(self.artists):
                 cur.execute(
                     "INSERT INTO artists (position, name, genre, "

@@ -269,8 +269,6 @@ from checks.fixtures.library import populate_library
 
 populate_library(STORE)
 
-STORE.register_user("Георгий", "1")
-STORE.set_current_user(STORE.find_user("Георгий"))
 
 from app.ui.main_window import MainWindow
 

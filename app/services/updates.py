@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QObject, QProcess, QTemporaryDir, QTimer, QUrl, Signal
+from PySide6.QtCore import QDir, QObject, QProcess, QProcessEnvironment, QTemporaryDir, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 from app.version import INSTALLER_NAME, RELEASE_REPOSITORY, VERSION
@@ -161,7 +161,13 @@ class Updates(QObject):
             elif received != release.size or not hmac.compare_digest(digest.hexdigest(), release.digest):
                 self.failed.emit("Проверка файла обновления не прошла.")
             else:
-                started, _ = QProcess.startDetached(str(installer), [], str(installer.parent))
+                process = QProcess()
+                process.setProgram(str(installer))
+                process.setWorkingDirectory(str(installer.parent))
+                environment = QProcessEnvironment.systemEnvironment()
+                environment.insert("PYINSTALLER_RESET_ENVIRONMENT", "1")
+                process.setProcessEnvironment(environment)
+                started, _ = process.startDetached()
                 if started:
                     temporary.setAutoRemove(False)
                     self.installer_started.emit()

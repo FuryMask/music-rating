@@ -73,8 +73,7 @@ class MusicCatalogTest(unittest.TestCase):
                     overlay.pages.setCurrentIndex(1)
                     overlay.input_link.setText(f"https://open.spotify.com/album/{ALBUM_ID}")
                     overlay.btn_load.click()
-                    self.assertEqual(overlay.pages.currentIndex(), 2)
-                    overlay._request_cloud_sign_in()
+                    self.assertEqual(overlay.pages.currentIndex(), 1)
                     self.assertEqual(auth, [True])
                     self.assertEqual(server.requests, [])
 

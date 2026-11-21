@@ -107,6 +107,7 @@ from checks.fixtures.library import populate_library
 populate_library(STORE)
 from app.ui.dialogs.track_dialog import FADE_MS, RISE_MS, TrackDialogOverlay
 from app.ui.main_window import MainWindow
+from app.services.cloud_library import CloudSession
 from app.ui.pages.rate_album import RateAlbumOverlay
 from app.ui.widgets import motion
 from app.ui.widgets.album_card import AlbumCard
@@ -638,7 +639,10 @@ QTest.mouseClick(win.sidebar.btn_add, Qt.MouseButton.LeftButton)
 check("добавление из сайдбара открывает существующий мастер",
       win._choice_overlay is not None and win._choice_overlay.isVisible())
 win._choice_overlay.hide()
-STORE.register_user("Проверка профиля", "test-password")
+profile_id = "fixture-account"
+win._cloud_upload._save_session(CloudSession(profile_id, "fixture", display_name="Проверка профиля"))
+win._cloud_upload._set_members({profile_id: "Проверка профиля"})
+win._cloud_upload.poll = lambda: None
 win.open_profile()
 profile = win._profile_overlay
 QTest.qWait(450)
@@ -758,9 +762,10 @@ check("треки сопоставлены по названиям и испол
           playlist, type(catalog)(tracks=catalog.tracks[::-1], album_id=catalog.album_id)
       )] == [track.uri for track in queue])
 wizard = RateAlbumOverlay(win)
+wizard.set_cloud_members(win._cloud_upload.members())
 wizard.open_for(playlist)
 check("кнопка прослушивания скрыта на первом шаге", not wizard.btn_listen.isVisible())
-wizard._selected = {STORE.raters[0]}
+wizard.rater_buttons[profile_id].click()
 wizard.go_to_step(1)
 check("кнопка прослушивания появляется на шаге оценок", wizard.btn_listen.isVisible())
 wizard.btn_listen.click()

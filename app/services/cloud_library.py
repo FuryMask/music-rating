@@ -33,6 +33,9 @@ class CloudSession:
     access_token: str = field(repr=False)
     refresh_token: str = field(default="", repr=False)
     expires_at: float = 0
+    email: str = ""
+    display_name: str = ""
+    created_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -198,6 +201,9 @@ class CloudLibrary:
     def resend_confirmation(self, email: str) -> None:
         self._request("/auth/v1/resend", body={"type": "signup", "email": email})
 
+    def sign_out(self, session: CloudSession) -> None:
+        self._request("/auth/v1/logout?scope=local", body={}, session=session)
+
     def renew(self, session: CloudSession) -> CloudSession:
         if session.access_token and (not session.expires_at or session.expires_at > time.time() + 60):
             return session
@@ -229,7 +235,11 @@ class CloudLibrary:
             expiration = result.get("expires_at") or time.time() + float(result.get("expires_in") or 3600)
             if not isinstance(refresh, str):
                 raise ValueError
-            return CloudSession(str(UUID(user["id"])), token, refresh, float(expiration))
+            metadata = user.get("user_metadata")
+            name = metadata.get("display_name") or metadata.get("full_name") if isinstance(metadata, dict) else ""
+            return CloudSession(str(UUID(user["id"])), token, refresh, float(expiration),
+                                user.get("email") or "", name if isinstance(name, str) else "",
+                                user.get("created_at") or "")
         except (ValueError, TypeError):
             raise CloudError("Supabase вернул неверный идентификатор аккаунта.") from None
 

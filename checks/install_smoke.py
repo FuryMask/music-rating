@@ -62,8 +62,9 @@ def main() -> None:
                 assert database.is_file(), "Music Rating did not create its database during startup."
                 with closing(sqlite3.connect(database.as_uri() + "?mode=rw", uri=True)) as db:
                     assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-                    for name in ("users", "albums", "artists"):
+                    for name in ("albums", "artists"):
                         assert db.execute(f"SELECT count(*) FROM {name}").fetchone() == (0,)
+                    assert db.execute("SELECT name FROM sqlite_master WHERE name = 'users'").fetchone() is None
                     with db:
                         db.execute("INSERT INTO meta(key, value) VALUES (?, ?)", ("setup_smoke", "persistent"))
             finally:
