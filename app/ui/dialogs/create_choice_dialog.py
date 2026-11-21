@@ -475,11 +475,12 @@ class CreateChoiceOverlay(QWidget):
         provider = detect_provider(link)
         catalog = self._catalog if self._catalog is not None and self._catalog.available() else None
         local_spotify = provider == "spotify" and spotify.load_credentials() is not None
-        spotify_catalog = catalog if not local_spotify else None
+        spotify_catalog = catalog if provider == "spotify" else None
         if provider == "spotify" and not local_spotify and spotify_catalog is None:
-            # Ключей ещё нет: окно ключей, ссылка остаётся в поле —
-            # после сохранения загрузка повторится сама
-            self._open_keys_page()
+            if self._catalog is not None:
+                self.cloud_sign_in_requested.emit()
+            else:
+                self._open_keys_page()
             return
         self._loading = True
         self._show_error("")
@@ -501,8 +502,14 @@ class CreateChoiceOverlay(QWidget):
         error_text = ""
         try:
             if provider == "spotify":
-                data = (spotify.load_album_from_link(link, catalog=spotify_catalog) if spotify_catalog
-                        else spotify.load_album_from_link(link))
+                if spotify_catalog is not None:
+                    try:
+                        data = spotify.load_album_from_link(link, catalog=spotify_catalog)
+                    except CatalogError:
+                        if not local_spotify:
+                            raise
+                if data is None:
+                    data = spotify.load_album_from_link(link)
             elif provider == "deezer":
                 data = deezer.load_album_from_link(link)
             elif provider == "ytmusic":

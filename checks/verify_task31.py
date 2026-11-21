@@ -202,7 +202,6 @@ QTest.qWait(100)
 print("== ФАЗА 2: чистка обложек ==")
 COVERS.mkdir(parents=True, exist_ok=True)
 
-STORE.register_user("Георгий", "pass1", "pass1")
 STORE.add_artist("Артист А")  # add_album сам исполнителей не создаёт
 
 # Обложка «осиротела»: файла нет ни в одной ссылке базы

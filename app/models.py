@@ -105,25 +105,6 @@ class AlbumDraft:
 
 
 @dataclass
-class User:
-    """Аккаунт пользователя (система профилей).
-
-    Пароль хранится ТОЛЬКО в виде хэша PBKDF2-HMAC-SHA256 со своей
-    солью (см. store.register_user) — восстановить исходный текст
-    нельзя. last_rated_at — момент последней оценки, в которой этот
-    пользователь участвовал (обновляется при «Готово» в мастере
-    оценивания); показывается на вкладке «Главная» окна профиля.
-    """
-
-    id: str                       # заполняет store при регистрации
-    username: str
-    password_hash: str = ""
-    password_salt: str = ""
-    created_at: str = ""          # момент регистрации (ISO-строка)
-    last_rated_at: str | None = None
-
-
-@dataclass
 class UserStats:
     """Статистика пользователя (вкладка «Статистика» окна профиля).
 
@@ -138,6 +119,7 @@ class UserStats:
     оценки.
     """
 
+    last_rated_at: str | None = None
     rated_count: int = 0          # альбомов, где пользователь ставил оценки
     favorite_album: tuple[str, float] | None = None
     favorite_artist: tuple[str, float] | None = None

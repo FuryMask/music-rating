@@ -62,6 +62,7 @@ from checks.fixtures.library import populate_library
 
 populate_library(STORE)
 from app.ui.main_window import MainWindow
+from app.services.cloud_library import CloudSession
 
 PASS = 0
 FAIL: list[str] = []
@@ -77,8 +78,6 @@ def check(name: str, cond: bool) -> None:
 
 
 # --- Данные: демо-библиотека (после стирания data/) + аккаунт -------------
-STORE.register_user("Георгий", "1")
-STORE.set_current_user(STORE.find_user("Георгий"))
 
 TMP = APP / "_t30_tmp"
 TMP.mkdir(exist_ok=True)
@@ -165,19 +164,22 @@ check("в одном ряду с «Редактировать»",
 
 # ============================================================
 print("--- 6. Профиль: вкладки «Данные» и «Настройки» ---")
+session = CloudSession("cloud-uid", "fixture", display_name="Георгий", email="geo@example.test")
+win._cloud_upload._save_session(session)
+win._cloud_upload.poll = lambda: None
 win.open_profile()
 ov = win._profile_overlay
 QTest.qWait(250)
-check("профиль открыт (залогинен)", ov.pages.currentIndex() == 2)
+check("профиль открыт (залогинен)", ov.isVisible() and ov.lbl_name.text() == "Георгий")
 names = [b.text() for b in ov.tab_buttons]
 check("вкладки: Главная/Данные/Настройки/Статистика",
       names == ["Главная", "Данные", "Настройки", "Статистика"])
 
 ov.tab_buttons[1].click()
 QTest.qWait(30)
-check("индекс 1 — «Данные» (поля пароля здесь)",
+check("индекс 1 — «Данные» (почта Supabase)",
       ov.tab_content.currentIndex() == 1
-      and hasattr(ov, "in_new_password"))
+      and "geo@example.test" in ov.lbl_email.text())
 
 ov.tab_buttons[2].click()
 QTest.qWait(30)
@@ -236,10 +238,10 @@ with zipfile.ZipFile(zip_path) as zf:
     zf.extract(_DB_ENTRY, str(TMP / "snap"))
 snap = sqlite3.connect(str(TMP / "snap" / _DB_ENTRY))
 snap_titles = {r[0] for r in snap.execute("SELECT title FROM albums")}
-snap_users = {r[0] for r in snap.execute("SELECT username FROM users")}
+snap_users = snap.execute("SELECT name FROM sqlite_master WHERE name = 'users'").fetchone()
 snap.close()
 check("в выгруженной базе все альбомы", len(snap_titles) == N_ALBUMS)
-check("в выгруженной базе аккаунт Георгий", snap_users == {"Георгий"})
+check("экспорт библиотеки без учётных записей", snap_users is None)
 
 # ============================================================
 print("--- 8. Импорт ZIP меняет локальное наполнение ---")
@@ -267,8 +269,7 @@ check("исполнители на месте", len(STORE.artists) == N_ARTISTS)
 check("обложка из архива распакована",
       (COVERS / "probe_cover.png").is_file())
 check("сессия пережила импорт",
-      STORE.current_user is not None
-      and STORE.current_user.username == "Георгий")
+      win._cloud_upload.catalog_session() is session)
 check("сигнал db_imported: главная показана, стек очищен",
       win.pages.currentWidget() is win.home_page
       and win._nav_stack == [])
@@ -312,15 +313,15 @@ check("ошибка импорта — красный тост",
 check("наполнение не изменилось", len(STORE.albums) == before)
 
 # ============================================================
-print("--- 10. Импорт базы без аккаунтов → вход ---")
+print("--- 10. Облачный вход после импорта базы ---")
 no_users = TMP / "no-users.db"
 shutil.copyfile(bare, no_users)
 conn = sqlite3.connect(str(no_users))
-conn.execute("DELETE FROM users")
+conn.execute("DROP TABLE IF EXISTS users")
 conn.execute("DELETE FROM meta WHERE key = 'current_user_id'")
 conn.commit()
 conn.close()
-# Полный поток — через окно профиля (вход показывается обработчиком)
+# Импорт заменяет SQLite и сохраняет действующий облачный сеанс.
 QFileDialog.getOpenFileName = staticmethod(
     lambda *a, **k: (str(no_users), "База SQLite (*.db)")
 )
@@ -331,9 +332,8 @@ _t = last_toast()
 check("импорт прошёл (тост успеха)",
       _t is not None and _t.text == "База импортирована"
       and _t.kind == "success")
-check("аккаунтов нет — сессия снята", STORE.current_user is None)
-check("профиль показал вход",
-      ov.pages.currentIndex() == 0)
+check("облачный сеанс сохранён", win._cloud_upload.catalog_session() is session)
+check("карточка осталась открыта", ov.isVisible())
 check("наполнение из базы без аккаунтов загружено",
       len(STORE.albums) == N_ALBUMS)
 check("после импорта появился главный экран",

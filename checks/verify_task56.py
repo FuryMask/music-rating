@@ -128,7 +128,6 @@ class CloudUploadTest(unittest.TestCase):
         apply_theme(cls.qt)
 
     def test_preview_upload_and_retry(self) -> None:
-        STORE.register_user("Участник", "local-password")
         album = STORE.add_album(AlbumDraft(title="Проверка облака", artists=[ArtistDraft("Исполнитель")],
                                           tracks=[TrackDraft("Трек")]))
         STORE.rate_album(album, ["Участник"], [[8.5]])
@@ -285,7 +284,7 @@ class CloudUploadTest(unittest.TestCase):
                         self.assertTrue(wait_for(reopened.top_bar.cloud_button.isEnabled))
                         self.assertEqual(server.refreshes, 1)
                         settings = reopened._cloud_upload._settings
-                        self.assertNotIn(REFRESH_TOKEN, settings.value(reopened._cloud_upload._profile_key, ""))
+                        self.assertNotIn(REFRESH_TOKEN, settings.value("CloudSession/current", ""))
                     finally:
                         reopened.close()
             finally:

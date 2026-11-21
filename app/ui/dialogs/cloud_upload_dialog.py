@@ -20,6 +20,9 @@ from app.ui.dialogs.exit_confirm_dialog import _make_blurred
 from app.ui.widgets.hoverable import HoverButton
 from app.ui.widgets.motion import fade_in
 
+_SESSION_KEY = "CloudSession/current"
+_SESSION_MIGRATED_KEY = "CloudSession/migrated"
+
 
 class CloudUploadDialog(QDialog):
     _finished = Signal(object, object)
@@ -28,6 +31,8 @@ class CloudUploadDialog(QDialog):
     availability_changed = Signal(bool, str)
     library_downloaded = Signal(int)
     members_changed = Signal(object)
+    session_changed = Signal(object)
+    sign_in_required = Signal()
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -36,8 +41,8 @@ class CloudUploadDialog(QDialog):
         self._background: QPixmap | None = None
         self._cloud = CloudLibrary()
         self._session: CloudSession | None = None
-        self._settings = QSettings("Music Rating", "Music Rating")
-        self._profile_key = ""
+        self._settings = QSettings(QSettings.defaultFormat(), QSettings.Scope.UserScope,
+                                   "Music Rating", "Music Rating")
         self._members: dict[str, str] = {}
         self._polling = False
         self._deferred_operation = None
@@ -84,6 +89,7 @@ class CloudUploadDialog(QDialog):
         self.status.hide()
         layout.addWidget(self.status)
         parent.installEventFilter(self)
+        self._restore_session()
 
     def _make_confirm(self) -> QWidget:
         page = QWidget()
@@ -100,7 +106,7 @@ class CloudUploadDialog(QDialog):
         self.yes_button = self._button("Да", lambda: self._start(upload=True), row, primary=True)
         layout.addLayout(row)
         account_row = QHBoxLayout()
-        self.account_button = self._button("Войти в облако", self._cloud_account, account_row)
+        self.account_button = self._button("Войти в аккаунт", self._cloud_account, account_row)
         account_row.addStretch(1)
         layout.addLayout(account_row)
         self.pages.addWidget(page)
@@ -189,7 +195,7 @@ class CloudUploadDialog(QDialog):
         self.email_code.clear()
         self._set_status("")
         self.confirm_title.setText("Переместить все локальные данные в облако?")
-        self.account_button.setText("Выйти из облака" if self._session else "Войти в облако")
+        self.account_button.setVisible(self._session is None)
         self._show_page(self.confirm)
         self.no_button.setFocus()
 
@@ -219,11 +225,14 @@ class CloudUploadDialog(QDialog):
         parent = self.parentWidget()
         self.setGeometry(QRect(parent.mapToGlobal(QPoint()), parent.size()))
 
+    def _refit_if_visible(self) -> None:
+        if self.isVisible():
+            self._fit_parent()
+
     def open(self) -> None:
         if self.isVisible():
             return
         self._auth_only = False
-        self._load_profile_session()
         self._background = _make_blurred(self.parentWidget().grab())
         self._fit_parent()
         super().open()
@@ -234,7 +243,7 @@ class CloudUploadDialog(QDialog):
         self.open()
         self._auth_only = True
         self._action = "connect"
-        self.confirm_title.setText("Войти в облако Music Rating")
+        self.confirm_title.setText("Вход в Music Rating")
         self._show_sign_in()
 
     def _back_from_sign_in(self) -> None:
@@ -245,13 +254,16 @@ class CloudUploadDialog(QDialog):
 
     def eventFilter(self, watched, event) -> bool:
         if (watched is self.parentWidget() and self.isVisible()
-                and event.type() in (QEvent.Type.Resize, QEvent.Type.Move)):
+                and event.type() in (QEvent.Type.Resize, QEvent.Type.Move, QEvent.Type.WindowStateChange)):
             self._fit_parent()
+            QTimer.singleShot(0, self._refit_if_visible)
         return super().eventFilter(watched, event)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._show_confirm()
+        self._fit_parent()
+        QTimer.singleShot(0, self._refit_if_visible)
         fade_in(self.card, 180)
 
     def hideEvent(self, event) -> None:
@@ -402,53 +414,72 @@ class CloudUploadDialog(QDialog):
 
     def _cloud_account(self) -> None:
         self._action = "connect"
-        if self._session is None:
-            self._show_sign_in()
-        elif not self._polling:
-            self._disconnect()
-        else:
+        self._show_sign_in()
+
+    def logout(self) -> None:
+        if self._polling:
             self._deferred_operation = self._disconnect
+        else:
+            self._disconnect()
 
     def _disconnect(self) -> None:
+        session = self._session
         self._save_session(None)
         self._set_members({})
-        self._show_confirm()
-        self.availability_changed.emit(False, "Войдите через кнопку облака слева внизу.")
+        self.availability_changed.emit(False, "Войдите через кнопку профиля слева внизу.")
+        self.sign_in_required.emit()
+        if session is not None and session.access_token:
+            def revoke() -> None:
+                try:
+                    self._cloud.sign_out(session)
+                except CloudError:
+                    pass
 
-    def _load_profile_session(self) -> None:
-        key = self._local_profile_key()
-        if self._polling or key == self._profile_key:
-            return
-        self._profile_key = key
-        self._session = None
-        self._set_members({})
+            QThreadPool.globalInstance().start(revoke)
+
+    def _restore_session(self) -> None:
+        key = _SESSION_KEY
         encrypted = self._settings.value(key, "", type=str)
+        if not encrypted and not self._settings.value(_SESSION_MIGRATED_KEY, False, type=bool):
+            key = f"CloudSession/{STORE.legacy_cloud_profile()}"
+            if key != _SESSION_KEY:
+                encrypted = self._settings.value(key, "", type=str)
         if encrypted:
             try:
                 data = json.loads(unprotect_secret(encrypted))
-                self._session = CloudSession(str(UUID(data["user_id"])), "", data["refresh_token"])
+                refresh = data["refresh_token"]
+                if not isinstance(refresh, str) or not refresh:
+                    raise ValueError
+                self._session = CloudSession(str(UUID(data["user_id"])), "", refresh,
+                                             email=data.get("email", ""), display_name=data.get("display_name", ""),
+                                             created_at=data.get("created_at", ""))
+                if key != _SESSION_KEY:
+                    self._settings.setValue(_SESSION_KEY, encrypted)
+                    self._settings.remove(key)
             except (OSError, TypeError, ValueError, KeyError):
                 self._settings.remove(key)
-        self.availability_changed.emit(False, "Проверяем облачную библиотеку…" if self._session
-                                       else "Войдите через кнопку облака слева внизу.")
-
-    @staticmethod
-    def _local_profile_key() -> str:
-        user = STORE.current_user
-        return f"CloudSession/{user.id if user else 'guest'}"
+        if not self._settings.value(_SESSION_MIGRATED_KEY, False, type=bool):
+            self._settings.setValue(_SESSION_MIGRATED_KEY, True)
+            self._settings.sync()
 
     def _save_session(self, session: CloudSession | None) -> None:
+        previous_id = self._session.user_id if self._session is not None else None
         self._session = session
+        if session is None or session.user_id != previous_id:
+            self._set_members({})
         if session is None:
-            self._settings.remove(self._profile_key)
+            self._settings.remove(_SESSION_KEY)
         elif session.refresh_token:
             try:
-                data = json.dumps({"user_id": session.user_id, "refresh_token": session.refresh_token})
-                self._settings.setValue(self._profile_key, protect_secret(data))
+                data = json.dumps({"user_id": session.user_id, "refresh_token": session.refresh_token,
+                                   "email": session.email, "display_name": session.display_name,
+                                   "created_at": session.created_at})
+                self._settings.setValue(_SESSION_KEY, protect_secret(data))
             except (OSError, ValueError):
-                self._settings.remove(self._profile_key)
+                self._settings.remove(_SESSION_KEY)
         self._settings.sync()
-        self.account_button.setText("Выйти из облака" if session else "Войти в облако")
+        self.account_button.setVisible(session is None)
+        self.session_changed.emit(session)
 
     def _active_session(self) -> CloudSession:
         session = self._session
@@ -465,14 +496,10 @@ class CloudUploadDialog(QDialog):
             self.members_changed.emit(members)
 
     def members(self) -> dict[str, str]:
-        if not self._polling and self._continuation is None:
-            self._load_profile_session()
         return dict(self._members)
 
     def catalog_session(self) -> CloudSession | None:
-        if self._profile_key == self._local_profile_key():
-            return self._session
-        return None
+        return self._session
 
     def start_monitoring(self) -> None:
         self._poll_timer.start()
@@ -481,7 +508,6 @@ class CloudUploadDialog(QDialog):
     def poll(self) -> None:
         if self._polling or self._continuation is not None:
             return
-        self._load_profile_session()
         if self._session is None:
             return
         self._polling = True
@@ -499,12 +525,11 @@ class CloudUploadDialog(QDialog):
 
     def _on_polled(self, result, error) -> None:
         self._polling = False
-        if self._profile_key != self._local_profile_key():
-            self._load_profile_session()
-        elif error is not None:
+        if error is not None:
             if error.expired:
                 self._save_session(None)
                 self._set_members({})
+                self.sign_in_required.emit()
             elif error.code == "PT403":
                 self._set_members({})
             self.availability_changed.emit(False, str(error))
@@ -526,7 +551,7 @@ class CloudUploadDialog(QDialog):
         return f"seen:{self._session.user_id}"
 
     def download(self) -> None:
-        if self.isVisible() or self._session is None or self._profile_key != self._local_profile_key():
+        if self.isVisible() or self._session is None:
             return
         account_id = self._session.user_id
         self.open()

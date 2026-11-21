@@ -29,4 +29,14 @@ Source: "..\dist\MusicRating.exe"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{autoprograms}\Music Rating"; Filename: "{app}\MusicRating.exe"
 
 [Run]
-Filename: "{app}\MusicRating.exe"; Description: "{cm:LaunchProgram,Music Rating}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\MusicRating.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,Music Rating}"; Flags: nowait postinstall skipifsilent runascurrentuser; BeforeInstall: ResetPythonEnvironment
+
+[Code]
+function SetEnvironmentVariable(lpName, lpValue: String): Boolean;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+procedure ResetPythonEnvironment;
+begin
+  { Update installers started by older builds can inherit an expired extraction directory. }
+  SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1');
+end;

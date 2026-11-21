@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from app.models import Album, Artist
 from app.services.backfill import ArtBackfiller
+from app.services.cloud_library import CloudSession
 from app.services.deezer import DeezerAlbum
 from app.services.genius import GeniusAlbum
 from app.services.music_catalog import MusicCatalog
@@ -88,6 +89,8 @@ class MainWindow(QMainWindow):
         self._cloud_upload.availability_changed.connect(self.top_bar.set_cloud_availability)
         self._cloud_upload.library_downloaded.connect(self._on_cloud_downloaded)
         self._cloud_upload.members_changed.connect(self._on_cloud_members_changed)
+        self._cloud_upload.session_changed.connect(self._on_cloud_session_changed)
+        self._cloud_upload.sign_in_required.connect(self._cloud_upload.open_sign_in)
         self.top_bar.cloud_button.clicked.connect(self._download_cloud_library)
         root.addWidget(self.top_bar)
         search_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
@@ -301,6 +304,24 @@ class MainWindow(QMainWindow):
     def _on_cloud_members_changed(self, members: dict[str, str]) -> None:
         if self._rate_overlay is not None:
             self._rate_overlay.set_cloud_members(members)
+        self._on_cloud_session_changed(self._cloud_upload.catalog_session())
+
+    def start_cloud(self) -> None:
+        self._cloud_upload.start_monitoring()
+        if self._cloud_upload.catalog_session() is None:
+            self._cloud_upload.open_sign_in()
+
+    def _cloud_display_name(self, session: CloudSession) -> str:
+        return (self._cloud_upload.members().get(session.user_id) or session.display_name
+                or session.email or "Аккаунт Supabase")
+
+    def _on_cloud_session_changed(self, session: CloudSession | None) -> None:
+        if self._profile_overlay is None or not self._profile_overlay.isVisible():
+            return
+        if session is None:
+            self._profile_overlay.close_overlay()
+        else:
+            self._profile_overlay.set_account(session, self._cloud_display_name(session))
 
     # --- Навигация со стеком: каждый экран помнит, откуда открыт ---
     def _push_current(self) -> None:
@@ -582,13 +603,15 @@ class MainWindow(QMainWindow):
     def open_profile(self) -> None:
         """Кнопка профиля в сайдбаре — окно входа или карточки аккаунта."""
         self.search_panel.hide()
+        session = self._cloud_upload.catalog_session()
+        if session is None:
+            self._cloud_upload.open_sign_in()
+            return
         if self._profile_overlay is None:
             self._profile_overlay = ProfileOverlay(self)
-            self._profile_overlay.account_deleted.connect(
-                self._on_account_deleted
-            )
+            self._profile_overlay.logout_requested.connect(self._cloud_upload.logout)
             self._profile_overlay.db_imported.connect(self._on_db_imported)
-        self._profile_overlay.open()
+        self._profile_overlay.open(session, self._cloud_display_name(session))
 
     def _on_db_imported(self) -> None:
         """База импортирована (Task 30): обновить экраны.
@@ -601,12 +624,6 @@ class MainWindow(QMainWindow):
         self._nav_stack.clear()
         self._show_home()
         self._cloud_upload.poll()
-
-    def _on_account_deleted(self) -> None:
-        """Аккаунт удалён: его оценки убраны — обновить экраны."""
-        self.home_page.refresh()
-        if self.album_page.album is not None:
-            self.album_page.set_album(self.album_page.album)
 
     # --- Фоновая дозагрузка фото исполнителей с Deezer ---
     def _start_art_backfill(self) -> None:
