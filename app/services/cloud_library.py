@@ -4,7 +4,7 @@ import hashlib
 import json
 import mimetypes
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -155,7 +155,7 @@ class CloudLibrary:
         self._opener = build_opener(_NoRedirects())
 
     def _request(self, path: str, *, body=None, session: CloudSession | None = None,
-                 content_type: str = "application/json", binary: bool = False):
+                 content_type: str = "application/json", binary: bool = False, method: str | None = None):
         headers = {"apikey": self._public_key, "Accept": "*/*" if binary else "application/json"}
         if session is not None:
             headers["Authorization"] = f"Bearer {session.access_token}"
@@ -163,7 +163,7 @@ class CloudLibrary:
             headers["Content-Type"] = content_type
             if not isinstance(body, bytes):
                 body = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        request = Request(self._url + path, data=body, headers=headers)
+        request = Request(self._url + path, data=body, headers=headers, method=method)
         try:
             with self._opener.open(request, timeout=15) as response:
                 data = response.read()
@@ -203,6 +203,17 @@ class CloudLibrary:
 
     def sign_out(self, session: CloudSession) -> None:
         self._request("/auth/v1/logout?scope=local", body={}, session=session)
+
+    def update_display_name(self, session: CloudSession, display_name: str) -> CloudSession:
+        display_name = display_name.strip()
+        if not 1 <= len(display_name) <= 80 or not display_name.isprintable():
+            raise CloudError("Введите имя от 1 до 80 символов.")
+        user = self._request("/auth/v1/user", method="PUT", session=session,
+                             body={"data": {"display_name": display_name}})
+        metadata = user.get("user_metadata") if isinstance(user, dict) else None
+        if not isinstance(metadata, dict) or metadata.get("display_name") != display_name or user.get("id") != session.user_id:
+            raise CloudError("Supabase не подтвердил сохранение имени.")
+        return replace(session, display_name=display_name)
 
     def renew(self, session: CloudSession) -> CloudSession:
         if session.access_token and (not session.expires_at or session.expires_at > time.time() + 60):

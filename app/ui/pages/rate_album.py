@@ -261,6 +261,8 @@ class RateAlbumOverlay(QWidget):
         return page
 
     def set_cloud_members(self, members: dict[str, str]) -> None:
+        if members == self._cloud_members:
+            return
         self._cloud_members = dict(members)
         if self.isVisible() and self.steps.currentIndex() == 0:
             self._rebuild_rater_chips()
@@ -293,7 +295,7 @@ class RateAlbumOverlay(QWidget):
             )
         else:
             self.lbl_raters_hint.setText(
-                "Для оценивания войдите в Music Rating под аккаунтом с доступом к общей библиотеке."
+                "Войдите в Music Rating и задайте имя в профиле на вкладке «Данные»."
             )
 
     def _on_rater_toggled(self, name: str, checked: bool) -> None:

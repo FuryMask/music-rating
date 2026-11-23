@@ -16,6 +16,7 @@ const track = (name) => ({ name, artists: [artist], duration_ms: 180000 });
 let providerCalls = 0;
 let tokenCalls = 0;
 let validNext = true;
+let spotifyAllowed = true;
 
 globalThis.fetch = async (input, { headers }) => {
   const url = new URL(input);
@@ -33,6 +34,8 @@ globalThis.fetch = async (input, { headers }) => {
   }
   if (url.origin === "https://api.spotify.com") {
     assert.equal(headers.Authorization, "Bearer fixture-spotify-token");
+    if (!spotifyAllowed) return Response.json({}, { status: 403 });
+    if (url.pathname === `/v1/albums/${albumId}`) assert.equal(url.searchParams.get("market"), "US");
     if (url.pathname === `/v1/albums/${albumId}`) return Response.json({
       name: "Альбом", artists: [artist], tracks: { items: [track("Первый")], next: validNext ?
         `https://api.spotify.com/v1/albums/${albumId}/tracks?offset=1` : "https://elsewhere.test/tracks" },
@@ -68,6 +71,8 @@ assert.equal((await call(spotify, "member-token")).status, 200);
 assert.equal(tokenCalls, 1);
 validNext = false;
 assert.equal((await call(spotify, "member-token")).status, 502);
+spotifyAllowed = false;
+assert.deepEqual(await (await call(spotify, "member-token")).json(), { code: "provider_forbidden" });
 
 const songs = await (await call({ action: "genius-songs", ids: [17, 18, 17] }, "member-token")).json();
 assert.deepEqual(Object.keys(songs), ["17"]);
@@ -77,5 +82,5 @@ assert.doesNotMatch(JSON.stringify({ album, songs }), /fixture-(spotify|genius)-
 delete env.GENIUS_ACCESS_TOKEN;
 const unconfigured = await call({ action: "genius-songs", ids: [17] }, "member-token");
 assert.equal(unconfigured.status, 503);
-assert.deepEqual(await unconfigured.json(), { code: "not_configured" });
+assert.deepEqual(await unconfigured.json(), { code: "missing_credentials" });
 console.log("Cloud catalog authorization, provider routes, token cache, and responses passed.");

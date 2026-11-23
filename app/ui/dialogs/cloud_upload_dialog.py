@@ -32,6 +32,7 @@ class CloudUploadDialog(QDialog):
     library_downloaded = Signal(int)
     members_changed = Signal(object)
     session_changed = Signal(object)
+    display_name_finished = Signal(str)
     sign_in_required = Signal()
 
     def __init__(self, parent: QWidget) -> None:
@@ -47,6 +48,7 @@ class CloudUploadDialog(QDialog):
         self._polling = False
         self._deferred_operation = None
         self._continuation = None
+        self._failure_callback = None
         self._carry_out_upload = False
         self._action = "upload"
         self._auth_only = False
@@ -285,8 +287,9 @@ class CloudUploadDialog(QDialog):
             self.email_code.clear()
             super().reject()
 
-    def _run(self, status: str, operation, continuation) -> None:
+    def _run(self, status: str, operation, continuation, *, on_error=None) -> None:
         self._continuation = continuation
+        self._failure_callback = on_error
         self.pages.setEnabled(False)
         self._set_status(status)
         finished = self._finished.emit
@@ -308,6 +311,7 @@ class CloudUploadDialog(QDialog):
 
     def _on_finished(self, result, error) -> None:
         continuation, self._continuation = self._continuation, None
+        failure_callback, self._failure_callback = self._failure_callback, None
         self.pages.setEnabled(True)
         if error is not None:
             if error.expired:
@@ -316,7 +320,10 @@ class CloudUploadDialog(QDialog):
                 self.availability_changed.emit(False, str(error))
             if error.code == "email_not_confirmed":
                 self._show_email_confirmation()
-            self._set_status(str(error))
+            if failure_callback is None:
+                self._set_status(str(error))
+            else:
+                failure_callback(str(error))
             return
         self._set_status("")
         continuation(result)
@@ -497,6 +504,25 @@ class CloudUploadDialog(QDialog):
 
     def members(self) -> dict[str, str]:
         return dict(self._members)
+
+    def rating_members(self) -> dict[str, str]:
+        members = self.members()
+        if self._session is not None and self._session.display_name:
+            members[self._session.user_id] = self._session.display_name
+        return members
+
+    def update_display_name(self, display_name: str) -> None:
+        if self._continuation is not None or self._deferred_operation is not None:
+            self.display_name_finished.emit("Дождитесь окончания текущей операции и повторите попытку.")
+            return
+
+        def saved(session: CloudSession) -> None:
+            self._save_session(session)
+            self.display_name_finished.emit("")
+            self.poll()
+
+        self._run("Сохраняем имя…", lambda: self._cloud.update_display_name(self._active_session(), display_name),
+                  saved, on_error=self.display_name_finished.emit)
 
     def catalog_session(self) -> CloudSession | None:
         return self._session

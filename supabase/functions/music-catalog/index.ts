@@ -26,7 +26,7 @@ function json(value: Json, status = 200): Response {
 
 function secret(name: string): string {
   const value = Deno.env.get(name)?.trim();
-  if (!value) throw new CatalogFailure(503, "not_configured");
+  if (!value) throw new CatalogFailure(503, name.startsWith("SUPABASE_") ? "membership_unavailable" : "missing_credentials");
   return value;
 }
 
@@ -41,14 +41,15 @@ async function requireMember(authorization: string | null, signal: AbortSignal) 
   });
   if (response.status === 401) throw new CatalogFailure(401, "sign_in_required");
   if (response.status === 403) throw new CatalogFailure(403, "membership_required");
-  if (!response.ok) throw new CatalogFailure(503, "not_configured");
+  if (!response.ok) throw new CatalogFailure(503, "membership_unavailable");
   if ((await response.json()).length !== 1) throw new CatalogFailure(403, "membership_required");
 }
 
 async function callProvider(url: string, token: string, signal: AbortSignal): Promise<Json> {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal });
   if (response.status === 404) throw new CatalogFailure(404, "not_found");
-  if (response.status === 401 || response.status === 403) throw new CatalogFailure(502, "credentials_rejected");
+  if (response.status === 401) throw new CatalogFailure(502, "credentials_rejected");
+  if (response.status === 403) throw new CatalogFailure(502, "provider_forbidden");
   if (response.status === 429) throw new CatalogFailure(429, "rate_limited");
   if (!response.ok) throw new CatalogFailure(502, "provider_unavailable");
   return await response.json();
@@ -91,9 +92,11 @@ async function inBatches<T>(values: T[], call: (value: T) => Promise<void>) {
 
 async function spotifyAlbum(id: string, signal: AbortSignal): Promise<Json> {
   const token = await getSpotifyToken();
+  const configuredMarket = Deno.env.get("SPOTIFY_MARKET")?.trim().toUpperCase() ?? "";
+  const market = /^[A-Z]{2}$/.test(configuredMarket) ? configuredMarket : "US";
   let album;
   try {
-    album = await callProvider(`${SPOTIFY}/v1/albums/${id}`, token, signal);
+    album = await callProvider(`${SPOTIFY}/v1/albums/${id}?market=${market}`, token, signal);
   } catch (error) {
     if (error instanceof CatalogFailure && error.code === "credentials_rejected" && spotifyToken?.value === token) {
       spotifyToken = undefined;

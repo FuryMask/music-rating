@@ -301,9 +301,7 @@ class MainWindow(QMainWindow):
             message += f" Сохранены локальные правки. Записей с отличиями: {skipped}."
         notify(self, message)
 
-    def _on_cloud_members_changed(self, members: dict[str, str]) -> None:
-        if self._rate_overlay is not None:
-            self._rate_overlay.set_cloud_members(members)
+    def _on_cloud_members_changed(self, _members: dict[str, str]) -> None:
         self._on_cloud_session_changed(self._cloud_upload.catalog_session())
 
     def start_cloud(self) -> None:
@@ -312,10 +310,15 @@ class MainWindow(QMainWindow):
             self._cloud_upload.open_sign_in()
 
     def _cloud_display_name(self, session: CloudSession) -> str:
-        return (self._cloud_upload.members().get(session.user_id) or session.display_name
-                or session.email or "Аккаунт Supabase")
+        return session.display_name or self._cloud_upload.members().get(session.user_id, "")
 
     def _on_cloud_session_changed(self, session: CloudSession | None) -> None:
+        members = self._cloud_upload.rating_members()
+        if self._rate_overlay is not None:
+            self._rate_overlay.set_cloud_members(members)
+        changed_albums = STORE.update_rater_names(members)
+        if self.album_page.album is not None and self.album_page.album.id in changed_albums:
+            self.album_page.set_album(self.album_page.album)
         if self._profile_overlay is None or not self._profile_overlay.isVisible():
             return
         if session is None:
@@ -572,7 +575,7 @@ class MainWindow(QMainWindow):
         if self._rate_overlay is None:
             self._rate_overlay = RateAlbumOverlay(self)
             self._rate_overlay.album_rated.connect(self._on_album_rated)
-        self._rate_overlay.set_cloud_members(self._cloud_upload.members())
+        self._rate_overlay.set_cloud_members(self._cloud_upload.rating_members())
         self._rate_overlay.open_for(album)
         self._cloud_upload.poll()
 
@@ -610,6 +613,8 @@ class MainWindow(QMainWindow):
         if self._profile_overlay is None:
             self._profile_overlay = ProfileOverlay(self)
             self._profile_overlay.logout_requested.connect(self._cloud_upload.logout)
+            self._profile_overlay.display_name_requested.connect(self._cloud_upload.update_display_name)
+            self._cloud_upload.display_name_finished.connect(self._profile_overlay.display_name_finished)
             self._profile_overlay.db_imported.connect(self._on_db_imported)
         self._profile_overlay.open(session, self._cloud_display_name(session))
 
