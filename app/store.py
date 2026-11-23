@@ -233,6 +233,29 @@ class MusicStore:
             self.albums, self.artists = previous
             raise
 
+    def update_rater_names(self, members: dict[str, str]) -> set[str]:
+        if not members:
+            return set()
+        changes = []
+        for album in self.albums:
+            if album.ratings is None:
+                continue
+            for index, old_name in enumerate(album.ratings.rater_names):
+                new_name = members.get(album.ratings.rater_id(index))
+                if new_name and new_name != old_name:
+                    changes.append((album, index, new_name))
+        if not changes:
+            return set()
+        try:
+            with self._conn:
+                self._conn.executemany("UPDATE album_raters SET name = ? WHERE album_id = ? AND position = ?",
+                                       [(name, album.id, index) for album, index, name in changes])
+        except sqlite3.Error:
+            return set()
+        for album, index, name in changes:
+            album.ratings.rater_names[index] = name
+        return {album.id for album, _, _ in changes}
+
     def user_stats(self, user_id: str, display_name: str) -> UserStats:
         """Статистика для вкладки «Статистика» окна профиля.
 

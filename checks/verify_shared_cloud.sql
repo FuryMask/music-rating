@@ -1,4 +1,4 @@
--- Run after both migrations in a disposable Supabase-compatible database.
+-- Run after the Music Rating migrations in a disposable Supabase-compatible database.
 begin;
 insert into auth.users (id) values
     ('aaaaaaaa-0000-0000-0000-000000000001'),
@@ -7,6 +7,13 @@ insert into auth.users (id) values
 insert into public.music_rating_members (user_id, display_name) values
     ('aaaaaaaa-0000-0000-0000-000000000001', 'Georgy'),
     ('bbbbbbbb-0000-0000-0000-000000000002', 'Volodya');
+
+update auth.users set raw_user_meta_data = '{"display_name":" Georgy New "}'
+    where id = 'aaaaaaaa-0000-0000-0000-000000000001';
+update auth.users set raw_user_meta_data = '{"display_name":42}'
+    where id = 'bbbbbbbb-0000-0000-0000-000000000002';
+update auth.users set raw_user_meta_data = '{"display_name":"Georgy New"}'
+    where id = 'cccccccc-0000-0000-0000-000000000003';
 
 create policy test_other_storage_policy on storage.objects for all to anon, authenticated
     using (true) with check (true);
@@ -31,6 +38,8 @@ declare
     status jsonb := public.music_rating_shared_status(true);
 begin
     if status->>'revision' <> '3:' or jsonb_array_length(status->'members') <> 2
+        or not (status->'members' @> '[{"id":"aaaaaaaa-0000-0000-0000-000000000001","name":"Georgy New"},
+                                      {"id":"bbbbbbbb-0000-0000-0000-000000000002","name":"Volodya"}]')
         or jsonb_array_length(status->'shared') <> 3 or status->'personal' <> '[]'::jsonb
         or not (status->'shared' @> '[{"kind":"rating","payload":{"name":"Georgy","scores":{"track":9}}}]')
         or not (status->'shared' @> '[{"kind":"rating","payload":{"name":"Volodya","scores":{"track":7}}}]')

@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
 
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,17 +18,40 @@ if os.environ.get("MUSICRATING_CHECK_ROOT") != str(ROOT):
 sys.path.insert(0, str(ROOT))
 
 from app.services import genius, music_catalog, spotify
-from app.services.cloud_library import CloudSession
+from app.models import AlbumDraft, TrackDraft
+from app.services.cloud_library import CloudLibrary, CloudSession
+from app.store import MusicStore, STORE
 from app.ui.dialogs.create_choice_dialog import CreateChoiceOverlay
+from app.ui.main_window import MainWindow
 
 ALBUM_ID = "A" * 22
 ARTIST_ID = "B" * 22
 ARTIST = {"name": "Артист", "id": ARTIST_ID}
+USER_ID = "4cd14dde-d97b-4225-a033-e699c407fd4f"
 
 
 class CatalogHandler(BaseHTTPRequestHandler):
+    def _reply(self, status, response) -> None:
+        raw = json.dumps(response).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_PUT(self) -> None:
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.profile_request = self.path, self.headers.get("Authorization"), request
+        self._reply(200, {"id": USER_ID, "user_metadata": request["data"]})
+
     def do_POST(self) -> None:
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path.startswith("/rest/v1/rpc/"):
+            self._reply(403, {"code": "PT403"})
+            return
+        if getattr(self.server, "missing_function", False):
+            self._reply(404, {"code": "NOT_FOUND"})
+            return
         self.server.requests.append((self.path, self.headers.get("Authorization"), self.headers.get("apikey"), data))
         if data["action"] == "spotify-album":
             response = {"album": {"name": "Альбом", "release_date": "2026-11-20", "artists": [ARTIST],
@@ -36,20 +60,18 @@ class CatalogHandler(BaseHTTPRequestHandler):
         else:
             response = {"17": {"response": {"song": {"primary_artist": ARTIST,
                                                      "featured_artists": [{"name": "Гость"}]}}}}
-        raw = json.dumps(response).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
+        self._reply(200, response)
 
     def log_message(self, *args) -> None:
         pass
 
 
 class MusicCatalogTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.qt = QApplication([])
+
     def test_imports_with_cloud_sign_in(self) -> None:
-        qt = QApplication([])
         window = QWidget()
         window.resize(900, 600)
         window.show()
@@ -93,9 +115,57 @@ class MusicCatalogTest(unittest.TestCase):
                         self.assertEqual(url, "/functions/v1/music-catalog")
                         self.assertEqual(authorization, "Bearer mock-music-rating-session")
                         self.assertEqual(api_key, music_catalog.PUBLISHABLE_KEY)
+                    server.missing_function = True
+                    with self.assertRaisesRegex(music_catalog.CatalogError, "music-catalog не опубликована"):
+                        client.request("spotify-album", id=ALBUM_ID)
             finally:
                 window.close()
-                qt.processEvents()
+                self.qt.processEvents()
+                server.shutdown()
+                thread.join()
+
+    def test_profile_name_adds_current_account_to_ratings(self) -> None:
+        window = MainWindow()
+        self.addCleanup(window.close)
+        window.show()
+        with ThreadingHTTPServer(("127.0.0.1", 0), CatalogHandler) as server:
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                cloud = window._cloud_upload
+                cloud._cloud = CloudLibrary(f"http://127.0.0.1:{server.server_port}", "mock-public-key")
+                cloud._save_session(CloudSession(USER_ID, "mock-music-rating-session"))
+                album = STORE.add_album(AlbumDraft(title="Проверка имени", tracks=[TrackDraft("Трек")]))
+                STORE.rate_album(album, ["Старое имя"], [[8.5]], rater_ids=[USER_ID])
+                self.assertEqual(cloud.rating_members(), {})
+                window.open_profile()
+                profile = window._profile_overlay
+                profile.tab_buttons[1].click()
+                profile.display_name_input.setText(" Новое имя ")
+                profile.btn_save_display_name.click()
+                for _ in range(150):
+                    if cloud.rating_members() and not cloud._polling:
+                        break
+                    QTest.qWait(20)
+                self.assertEqual(server.profile_request, ("/auth/v1/user", "Bearer mock-music-rating-session",
+                                                          {"data": {"display_name": "Новое имя"}}))
+                self.assertEqual(cloud.members(), {})
+                self.assertEqual(cloud.rating_members(), {USER_ID: "Новое имя"})
+                self.assertEqual(album.ratings.rater_names, ["Новое имя"])
+                saved = MusicStore()
+                try:
+                    self.assertEqual(saved.albums[0].ratings.rater_names, ["Новое имя"])
+                finally:
+                    saved._conn.close()
+                profile.close_overlay()
+                window.open_rate_album(album)
+                wizard = window._rate_overlay
+                self.assertEqual(list(wizard.rater_buttons), [USER_ID])
+                self.assertEqual(wizard.rater_buttons[USER_ID].text(), "Новое имя")
+                wizard.rater_buttons[USER_ID].click()
+                wizard.go_to_step(1)
+                self.assertEqual(wizard._values, [[8.5]])
+            finally:
                 server.shutdown()
                 thread.join()
 

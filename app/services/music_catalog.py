@@ -62,8 +62,17 @@ class MusicCatalog(QObject):
             message = "Для этого аккаунта не открыт доступ к общей библиотеке Music Rating."
         elif code == "not_found":
             message = "Музыкальный сервис не нашёл эту запись."
-        elif code in ("not_configured", "credentials_rejected") or status == 404:
-            message = "Общий ключ для этого сервиса пока недоступен. Обратитесь к администратору Music Rating."
+        elif status == 404:
+            message = "Функция music-catalog не опубликована в Supabase. Обратитесь к администратору Music Rating."
+        elif code == "missing_credentials":
+            message = "В Supabase не заполнены секреты этого музыкального сервиса. Проверьте Edge Functions → Secrets."
+        elif code == "credentials_rejected":
+            message = "Музыкальный сервис отклонил общий ключ. Проверьте значения секретов в Supabase."
+        elif code == "provider_forbidden":
+            message = ("Spotify запретил доступ к каталогу. Проверьте статус приложения в Spotify Developer Dashboard."
+                       if action == "spotify-album" else "Genius запретил запрос к каталогу.")
+        elif code in ("membership_unavailable", "not_configured"):
+            message = "Функция Supabase не может проверить доступ к общей библиотеке. Проверьте настройки проекта."
         elif status == 429:
             message = "Музыкальный сервис ограничил число запросов. Повторите попытку позже."
         else:

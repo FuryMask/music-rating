@@ -1,5 +1,5 @@
 """Версия приложения и канал обновлений."""
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 RELEASE_REPOSITORY = "FuryMask/music-rating"
 INSTALLER_NAME = "MusicRating-Setup.exe"

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -125,6 +126,7 @@ class ProfileOverlay(QWidget):
     """Полнооконный оверлей профиля Supabase."""
 
     logout_requested = Signal()
+    display_name_requested = Signal(str)
     db_imported = Signal()      # база импортирована — обновить все экраны
 
     def __init__(self, parent: QWidget) -> None:
@@ -233,12 +235,45 @@ class ProfileOverlay(QWidget):
         self.lbl_email.setTextFormat(Qt.TextFormat.PlainText)
         self.lbl_email.setWordWrap(True)
         layout.addWidget(self.lbl_email)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, HOVER_PAD, 0)
+        self.display_name_input = QLineEdit(tab)
+        self.display_name_input.setPlaceholderText("Имя пользователя")
+        self.display_name_input.setAccessibleName("Имя пользователя")
+        self.display_name_input.setMaxLength(80)
+        self.display_name_input.returnPressed.connect(self._save_display_name)
+        row.addWidget(self.display_name_input, 1)
+        self.btn_save_display_name = HoverButton("Сохранить", tab)
+        self.btn_save_display_name.setObjectName("primaryButton")
+        self.btn_save_display_name.clicked.connect(self._save_display_name)
+        row.addWidget(self.btn_save_display_name)
+        layout.addLayout(row)
         layout.addStretch(1)
         self.btn_logout = HoverButton("Выйти из аккаунта", tab)
         self.btn_logout.setObjectName("ghostButton")
         self.btn_logout.clicked.connect(self.logout_requested.emit)
         layout.addWidget(self.btn_logout, 0, Qt.AlignmentFlag.AlignHCenter)
         return tab
+
+    def _save_display_name(self) -> None:
+        name = self.display_name_input.text().strip()
+        if not name or not name.isprintable():
+            notify(self, "Введите имя от 1 до 80 символов.", KIND_ERROR)
+            return
+        self.display_name_input.setEnabled(False)
+        self.btn_save_display_name.setEnabled(False)
+        self.btn_logout.setEnabled(False)
+        self.display_name_requested.emit(name)
+
+    def display_name_finished(self, error: str) -> None:
+        self.display_name_input.setEnabled(True)
+        self.btn_save_display_name.setEnabled(True)
+        self.btn_logout.setEnabled(True)
+        if error:
+            notify(self, error, KIND_ERROR)
+        else:
+            self.display_name_input.setText(self._display_name)
+            notify(self, "Имя сохранено.", KIND_SUCCESS)
 
     def _make_tab_settings(self) -> QWidget:
         """Вкладка «Настройки» (Task 30): экспорт и импорт БД.
@@ -417,12 +452,12 @@ class ProfileOverlay(QWidget):
         account = self._account
         if account is None:
             return
-        display_name = self._display_name
+        display_name = self._display_name or account.email or "Аккаунт Supabase"
         self.avatar.set_user(display_name)
         self.lbl_name.setTextFormat(Qt.TextFormat.PlainText)
         self.lbl_name.setText(display_name)
         self.lbl_email.setText(f"Электронная почта: {account.email}" if account.email else "Аккаунт Supabase")
-        stats = STORE.user_stats(account.user_id, display_name)
+        stats = STORE.user_stats(account.user_id, self._display_name)
         last = _fmt_date(stats.last_rated_at)
         self.lbl_last_rated.setText(f"Последняя оценка: {last}" if last else "")
         self.lbl_last_rated.setVisible(bool(last))
@@ -470,6 +505,8 @@ class ProfileOverlay(QWidget):
 
     # ================= Открытие / закрытие =================
     def set_account(self, account: CloudSession, display_name: str) -> None:
+        if self._account is None or self._account.user_id != account.user_id or not self.display_name_input.isModified():
+            self.display_name_input.setText(display_name)
         self._account = account
         self._display_name = display_name
         self._refresh_profile()
@@ -480,6 +517,7 @@ class ProfileOverlay(QWidget):
         self._bg = _make_blurred(parent.grab())
         self.setGeometry(parent.rect())
 
+        self.display_name_input.setModified(False)
         self.set_account(account, display_name)
         self._select_tab(TAB_HOME)
         self.show()
