@@ -179,6 +179,7 @@ class MainWindow(QMainWindow):
             self.sidebar,
             self.home_page.section_recent,
             self.home_page.section_rated,
+            self.home_page.section_unrated,
             self.home_page.section_artists,
         ]
         pre_hide(self._drop_targets)
@@ -472,7 +473,7 @@ class MainWindow(QMainWindow):
         self._go_back()
 
     def open_list(self, mode: str) -> None:
-        """Полный список «Смотреть все»: recent / albums / artists."""
+        """Открыть коллекцию из главной страницы или боковой панели."""
         self._push_current()
         self.search_panel.hide()
         self.list_page.show_mode(mode)

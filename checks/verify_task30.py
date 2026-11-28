@@ -57,12 +57,17 @@ class _StubBackfiller(QObject):
 
 bf.ArtBackfiller = _StubBackfiller
 
+from app.models import AlbumDraft, TrackDraft
 from app.store import STORE
 from checks.fixtures.library import populate_library
 
 populate_library(STORE)
 from app.ui.main_window import MainWindow
 from app.services.cloud_library import CloudSession
+from app.ui.pages.home_page import PAGE_MARGIN
+from app.ui.widgets.album_card import AlbumCard, CARD_SIZE
+from app.ui.widgets.section import CARD_SPACING, EDGE_PAD
+from app.ui.widgets.view_all_tile import ViewAllTile
 
 PASS = 0
 FAIL: list[str] = []
@@ -338,6 +343,85 @@ check("наполнение из базы без аккаунтов загруж
       len(STORE.albums) == N_ALBUMS)
 check("после импорта появился главный экран",
       win.pages.currentWidget() is win.home_page)
+
+# ============================================================
+print("--- 11. Оценённые альбомы и вся медиатека ---")
+ov.close_overlay()
+zero = STORE.add_album(AlbumDraft(title="Нулевая оценка", tracks=[TrackDraft(title="Трек")]))
+unrated = STORE.add_album(AlbumDraft(title="Альбом без оценки", tracks=[TrackDraft(title="Трек")]))
+STORE.rate_album(zero, ["Проверка"], [[0.0]])
+win.home_page.refresh()
+
+cards = win.home_page.section_rated.cards()
+preview = [card.album.id for card in cards if isinstance(card, AlbumCard)]
+check("в превью видны только оценённые, включая нулевую оценку",
+      zero.id in preview and unrated.id not in preview)
+check("у раздела есть плитка «Смотреть все»", isinstance(cards[-1], ViewAllTile))
+if isinstance(cards[-1], ViewAllTile):
+    cards[-1].clicked.emit()
+
+def shown_albums():
+    cards = [win.list_page.grid.itemAt(i).widget() for i in range(win.list_page.grid.count())]
+    return {card.album.id for card in cards if isinstance(card, AlbumCard)}
+
+check("«Смотреть все» открывает только оценённые альбомы",
+      win.pages.currentWidget() is win.list_page
+      and win.list_page.lbl_title.text() == "Оценённые альбомы"
+      and shown_albums() == {album.id for album in STORE.albums if album.rating is not None})
+win.sidebar._destinations["albums"].click()
+check("раздел «Альбомы» содержит всю медиатеку",
+      win.list_page.lbl_title.text() == "Альбомы"
+      and shown_albums() == {album.id for album in STORE.albums})
+
+# ============================================================
+print("--- 12. Неоценённые альбомы и ширина ленты недавних оценок ---")
+home = win.home_page
+win.sidebar._destinations["home"].click()
+home_layout = home.widget().layout()
+check("неоценённые идут сразу после оценённых",
+      home_layout.indexOf(home.section_unrated) == home_layout.indexOf(home.section_rated) + 1)
+for index in range(7):
+    STORE.add_album(AlbumDraft(title=f"Без оценки {index + 1}"))
+home.refresh()
+unrated_cards = home.section_unrated.cards()
+check("неоценённые в превью не содержат нулевой оценки",
+      all(card.album.rating is None for card in unrated_cards if isinstance(card, AlbumCard)))
+check("у неоценённых есть плитка «Смотреть все»", isinstance(unrated_cards[-1], ViewAllTile))
+if isinstance(unrated_cards[-1], ViewAllTile):
+    unrated_cards[-1].clicked.emit()
+check("«Смотреть все» открывает полный список без оценок",
+      win.list_page.lbl_title.text() == "Неоценённые альбомы"
+      and shown_albums() == {album.id for album in STORE.albums if album.rating is None})
+win.sidebar._destinations["home"].click()
+
+def recent_ids():
+    return [card.album.id for card in home.section_recent.cards()]
+
+def expected_capacity():
+    width = home.viewport().width() - 2 * (PAGE_MARGIN + EDGE_PAD)
+    return (width + CARD_SPACING) // (CARD_SIZE + CARD_SPACING)
+
+win.resize(1600, 840)
+QTest.qWait(100)
+wide_count = len(recent_ids())
+check("на широком окне недавние заполняют весь ряд", wide_count == expected_capacity())
+win.resize(900, 700)
+QTest.qWait(100)
+before = recent_ids()
+check("при сужении ряд показывает только помещающиеся карточки",
+      wide_count > len(before) == expected_capacity()
+      and home.section_recent._row.horizontalScrollBar().maximum() == 0)
+STORE.rate_album(unrated, ["Проверка"], [[8.0]])
+win._on_album_rated(unrated)
+QTest.qWait(100)
+check("новая оценка вытесняет последнюю карточку",
+      recent_ids() == [unrated.id, *before[:-1]])
+check("после оценки альбом переходит в оценённые",
+      unrated.id not in {card.album.id for card in home.section_unrated.cards() if isinstance(card, AlbumCard)}
+      and any(isinstance(card, AlbumCard) and card.album.id == unrated.id for card in home.section_rated.cards()))
+win.sidebar._destinations["recent"].click()
+check("боковой раздел недавних оценок показывает полный список",
+      shown_albums() == {album.id for album in STORE.albums if album.rating is not None})
 
 # ============================================================
 QTest.qWait(100)

@@ -27,6 +27,7 @@ Source: "..\dist\MusicRating.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Music Rating"; Filename: "{app}\MusicRating.exe"
+Name: "{autodesktop}\Music Rating"; Filename: "{app}\MusicRating.exe"; WorkingDir: "{app}"
 
 [Run]
 Filename: "{app}\MusicRating.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,Music Rating}"; Flags: nowait postinstall skipifsilent runascurrentuser; BeforeInstall: ResetPythonEnvironment

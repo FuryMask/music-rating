@@ -1,12 +1,12 @@
 """Полные списки «Смотреть все» — открываются по плитке на главной.
 
-Три режима (CollectionPage.show_mode):
+Режимы (CollectionPage.show_mode):
   "recent"  — «Недавно оценённые»: оценённые альбомы начиная с
               последнего оценённого и до первого оценённого
               (rated_at по убыванию);
-  "albums"  — «Оценённые альбомы»: ВСЕ альбомы библиотеки,
-              отсортированные по дате создания в приложении
-              (новее — раньше);
+  "rated"   — «Оценённые альбомы»: альбомы с оценкой, новее — раньше;
+  "unrated" — «Неоценённые альбомы»: альбомы без оценки, новее — раньше;
+  "albums"  — «Альбомы»: вся медиатека, новее — раньше;
   "artists" — «Исполнители»: все исполнители базы, новее — раньше
               (как и с обычными альбомами).
 
@@ -31,12 +31,16 @@ GRID_MARGIN_TOP = 12  # сверху больше: карточка растёт
                       # (10 % от высоты 228), при 8px край «пропадал»
 
 MODE_RECENT = "recent"
+MODE_RATED = "rated"
+MODE_UNRATED = "unrated"
 MODE_ALBUMS = "albums"
 MODE_ARTISTS = "artists"
 
 MODE_TITLES = {
     MODE_RECENT: "Недавно оценённые",
-    MODE_ALBUMS: "Оценённые альбомы",
+    MODE_RATED: "Оценённые альбомы",
+    MODE_UNRATED: "Неоценённые альбомы",
+    MODE_ALBUMS: "Альбомы",
     MODE_ARTISTS: "Исполнители",
 }
 
@@ -103,19 +107,13 @@ class CollectionPage(SmoothScrollArea):
                 for artist in reversed(STORE.artists)
             ]
         else:
-            if mode == MODE_RECENT:
-                # От последнего оценённого к первому оценённому
-                albums = sorted(
-                    (a for a in STORE.albums if a.rating is not None),
-                    key=lambda a: a.rated_at or "",
-                    reverse=True,
-                )
-            else:  # MODE_ALBUMS: все альбомы по дате создания в приложении
-                albums = sorted(
-                    STORE.albums,
-                    key=lambda a: a.created_at or "",
-                    reverse=True,
-                )
+            candidates = STORE.albums
+            if mode in (MODE_RECENT, MODE_RATED):
+                candidates = [a for a in candidates if a.rating is not None]
+            elif mode == MODE_UNRATED:
+                candidates = [a for a in candidates if a.rating is None]
+            date_field = "rated_at" if mode == MODE_RECENT else "created_at"
+            albums = sorted(candidates, key=lambda album: getattr(album, date_field) or "", reverse=True)
             cards = [self._album_card(album) for album in albums]
 
         self._fill(cards)

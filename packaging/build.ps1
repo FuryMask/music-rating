@@ -15,7 +15,7 @@ try {
     }
     $version = $releaseValues[0]
     $installerBase = [IO.Path]::GetFileNameWithoutExtension($releaseValues[1])
-    & $Python -c 'import platform, sys; sys.exit(not (sys.platform == "win32" and platform.machine().lower() == "amd64" and sys.maxsize > 2**32))'
+    & $Python -c "import platform, sys; sys.exit(not (sys.platform == 'win32' and platform.machine().lower() == 'amd64' and sys.maxsize > 2**32))"
     if ($LASTEXITCODE -ne 0) { throw "Build with 64-bit Windows Python on x64." }
 
     New-Item -ItemType Directory -Path build -Force | Out-Null

@@ -1,14 +1,14 @@
 """Домашняя страница — первая страница рабочей зоны.
 
 Секции (сверху вниз):
-  1. Недавно оценённые — очередь оценённых альбомов: свежая оценка
-     встаёт на первую позицию, остальные сдвигаются вправо; в ряду
-     максимум 7 + плитка «Смотреть все», если оценённых больше семи
-     (более старые оценки остаются за плиткой).
-  2. Оценённые альбомы — все созданные альбомы, новые карточки
+  1. Недавно оценённые — самые свежие оценки, которые помещаются
+     в один ряд по ширине окна.
+  2. Оценённые альбомы — альбомы с оценкой, новые карточки
      добавляются в начало; в ряду максимум 7 + плитка «Смотреть все»,
      если альбомов больше семи.
-  3. Исполнители — все исполнители базы, новее — раньше;
+  3. Неоценённые альбомы — альбомы без оценки, новее — раньше;
+     максимум 7 + плитка «Смотреть все».
+  4. Исполнители — все исполнители базы, новее — раньше;
      максимум 7 + плитка «Смотреть все».
 
 Клики:
@@ -16,7 +16,7 @@
   • карточка исполнителя → сигнал artist_opened (страница
     исполнителя с дискографией);
   • плитка «Смотреть все» → сигнал view_all с режимом
-    ("recent" / "albums" / "artists") — главное окно открывает
+    ("rated" / "unrated" / "artists") — главное окно открывает
     полный список (см. pages/collection_page.py).
 
 set_cards() перестраивает секции; refresh() вызывается после каждого
@@ -24,14 +24,17 @@ set_cards() перестраивает секции; refresh() вызывает�
 до первых данных сегменты показывают «Пока пусто».
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 from app.models import Album, Artist
 from app.store import STORE
+from app.ui.pages.collection_page import MODE_ARTISTS, MODE_RATED, MODE_UNRATED
 from app.ui.widgets import AlbumCard, ArtistCard, Section, ViewAllTile
+from app.ui.widgets.album_card import CARD_SIZE
 from app.ui.widgets.drop_animation import run_drop_in
 from app.ui.widgets.motion import BASE_MS, SmoothScrollArea
+from app.ui.widgets.section import CARD_SPACING, EDGE_PAD
 
 PAGE_MARGIN = 28          # отступы страницы от краёв рабочей зоны
 SECTION_GAP = 24          # расстояние между секциями
@@ -43,7 +46,7 @@ class HomePage(SmoothScrollArea):
 
     album_opened = Signal(object)   # Album — клик по карточке альбома
     artist_opened = Signal(object)  # Artist — клик по карточке исполнителя
-    view_all = Signal(str)          # "recent"/"albums"/"artists" — плитка
+    view_all = Signal(str)          # режим полного списка
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -62,15 +65,27 @@ class HomePage(SmoothScrollArea):
 
         self.section_recent = Section("Недавно оценённые", [], container)
         self.section_rated = Section("Оценённые альбомы", [], container)
+        self.section_unrated = Section("Неоценённые альбомы", [], container)
         self.section_artists = Section("Исполнители", [], container)
 
         layout.addWidget(self.section_recent)
         layout.addWidget(self.section_rated)
+        layout.addWidget(self.section_unrated)
         layout.addWidget(self.section_artists)
         layout.addStretch(1)
 
         self._signature = None
+        self._recent_albums: list[Album] = []
+        self._recent_count = 0
+        self._recent_resize = QTimer(self, singleShot=True, interval=0)
+        self._recent_resize.timeout.connect(self._refresh_recent)
+        self.viewport().installEventFilter(self)
         self.refresh()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.viewport() and event.type() == QEvent.Type.Resize:
+            self._recent_resize.start()
+        return super().eventFilter(watched, event)
 
     # --- Появление страницы (Task 39) ---
     def play_entrance(self) -> None:
@@ -85,7 +100,7 @@ class HomePage(SmoothScrollArea):
             return
         cards: list[QWidget] = []
         for section in (self.section_recent, self.section_rated,
-                        self.section_artists):
+                        self.section_unrated, self.section_artists):
             cards.extend(section.cards())
         run_drop_in(cards, ms=BASE_MS + 20, offset=14, stagger=22)
 
@@ -114,29 +129,35 @@ class HomePage(SmoothScrollArea):
         if not force and signature == self._signature:
             return  # ничего не поменялось — карточки уже актуальны
         rated = [a for a in STORE.albums if a.rating is not None]
-        # Очередь «Недавно оценённых»: последняя оценённый — первым.
-        # Среза до 7 здесь НЕТ — если оценённых больше семи, плитку
-        # «Смотреть все» добавит _album_cards (как в других секциях)
-        recent = sorted(rated, key=lambda a: a.rated_at or "", reverse=True)
-        # «Оценённые альбомы» — все альбомы, новее — раньше
-        albums = list(reversed(STORE.albums))
+        self._recent_albums = sorted(rated, key=lambda a: a.rated_at or "", reverse=True)
+        unrated = [a for a in reversed(STORE.albums) if a.rating is None]
         # «Исполнители» — новее — раньше
         artists = list(reversed(STORE.artists))
 
-        self.section_recent.set_cards(self._album_cards(recent, "recent"))
-        self.section_rated.set_cards(self._album_cards(albums, "albums"))
+        self._refresh_recent(force=True)
+        self.section_rated.set_cards(self._album_cards(list(reversed(rated)), MODE_RATED))
+        self.section_unrated.set_cards(self._album_cards(unrated, MODE_UNRATED))
         self.section_artists.set_cards(self._artist_cards(artists))
         # Пересчитываем отпечаток ПОСЛЕ сборки: artist_avatar_path()
         # мог назначить аватар-обложку, и следующий вызов не должен
         # из-за этого пересобирать секции ещё раз
         self._signature = self._data_signature()
 
+    def _refresh_recent(self, force: bool = False) -> None:
+        width = self.viewport().width() - 2 * (PAGE_MARGIN + EDGE_PAD)
+        capacity = max(0, (width + CARD_SPACING) // (CARD_SIZE + CARD_SPACING))
+        count = min(capacity, len(self._recent_albums))
+        if force or count != self._recent_count:
+            self._recent_count = count
+            self.section_recent.set_cards([self._album_card(album) for album in self._recent_albums[:count]])
+
+    def _album_card(self, album: Album) -> AlbumCard:
+        card = AlbumCard(album)
+        card.clicked.connect(self.album_opened.emit)
+        return card
+
     def _album_cards(self, albums: list[Album], mode: str) -> list[QWidget]:
-        cards: list[QWidget] = []
-        for album in albums[:ROW_CAP]:
-            card = AlbumCard(album)
-            card.clicked.connect(self.album_opened.emit)
-            cards.append(card)
+        cards: list[QWidget] = [self._album_card(album) for album in albums[:ROW_CAP]]
         if len(albums) > ROW_CAP:
             tile = ViewAllTile()
             tile.clicked.connect(lambda: self.view_all.emit(mode))
@@ -151,6 +172,6 @@ class HomePage(SmoothScrollArea):
             cards.append(card)
         if len(artists) > ROW_CAP:
             tile = ViewAllTile()
-            tile.clicked.connect(lambda: self.view_all.emit("artists"))
+            tile.clicked.connect(lambda: self.view_all.emit(MODE_ARTISTS))
             cards.append(tile)
         return cards

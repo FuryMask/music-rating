@@ -681,7 +681,7 @@ class MusicStore:
         ratings = AlbumRatings(
             rater_names=list(rater_names),
             values=[list(row) for row in values],
-            rated_at=datetime.now().isoformat(timespec="seconds"),
+            rated_at=datetime.now().isoformat(timespec="microseconds"),
             rater_ids=list(rater_ids or ()),
         )
         if preserve_other_raters and (previous := album.ratings) is not None:

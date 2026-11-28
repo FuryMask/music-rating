@@ -248,6 +248,7 @@ def all_home_cards():
     result = []
     for section in (win.home_page.section_recent,
                     win.home_page.section_rated,
+                    win.home_page.section_unrated,
                     win.home_page.section_artists):
         result.extend(section.cards())
     return result
